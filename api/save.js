@@ -1,44 +1,37 @@
 export const runtime = 'edge';
-
 import { put } from '@vercel/blob';
 
 export async function POST(req) {
-  const adminKey = process.env.ADMIN_KEY || '';
-  const sentKey = req.headers.get('x-admin-key') || '';
-
-  if (!adminKey || sentKey !== adminKey) {
-    return new Response(JSON.stringify({ ok: false, error: 'Unauthorized' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
-  let payload;
   try {
-    payload = await req.json();
-  } catch {
-    return new Response(JSON.stringify({ ok: false, error: 'Invalid JSON' }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
+    const adminKey = process.env.ADMIN_KEY || '';
+    const sentKey = req.headers.get('x-admin-key') || '';
+    if (!adminKey || sentKey !== adminKey) {
+      return json({ ok: false, error: 'Unauthorized' }, 401);
+    }
 
-  // Store at a fixed key; overwrite each save (no random suffix)
-  const key = 'family/family-data.json';
+    let payload;
+    try {
+      payload = await req.json();
+    } catch {
+      return json({ ok: false, error: 'Invalid JSON' }, 400);
+    }
 
-  try {
+    const key = 'family/family-data.json';
     await put(key, JSON.stringify(payload, null, 2), {
-      access: 'private',                // keep blob private; loaded via this API
+      access: 'private',
       addRandomSuffix: false,
-      contentType: 'application/json; charset=utf-8',
+      contentType: 'application/json; charset=utf-8'
     });
 
-    return new Response(JSON.stringify({ ok: true }), {
-      headers: { 'Content-Type': 'application/json' }
-    });
+    return json({ ok: true });
   } catch (e) {
-    return new Response(JSON.stringify({ ok: false, error: e.message }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    return json({ ok: false, error: e?.message || 'Server error' }, 500);
   }
+}
+
+function json(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { 'Content-Type': 'application/json' }
+  });
 }
