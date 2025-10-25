@@ -9,7 +9,7 @@
 <body>
 <header>
   <h1>Family Tree</h1>
-  <p>Static site – data saved in your browser (password: admin)</p>
+  <p>Static site – data saved locally or to a JSON file, with optional cloud sync on Vercel. Admin password: <code>admin</code></p>
 </header>
 
 <main>
@@ -17,7 +17,7 @@
     <div class="tabs">
       <button class="tab active" data-tab="tree">Family Tree</button>
       <button class="tab" data-tab="compare">Compare</button>
-      <button class="tab" data-tab="about">About</button>
+      <button class="tab" data-tab="about">About / Data</button>
     </div>
 
     <div class="admin-bar">
@@ -50,17 +50,48 @@
     <div id="compareResult" class="compare-result"></div>
   </section>
 
-  <!-- ABOUT / EXPORT-IMPORT -->
+  <!-- ABOUT / DATA -->
   <section id="about">
     <div class="card">
-      <h2>About</h2>
-      <p>This standalone HTML app stores data in your browser and can be expanded infinitely.</p>
-      <p><b>Admin password:</b> <code>admin</code></p>
+      <h2>Data Management</h2>
+
+      <h3>Cloud (Vercel)</h3>
+      <div class="row" style="margin-bottom:.5rem;">
+        <button class="btn" id="cloudLoadBtn" type="button">Load from Cloud</button>
+        <button class="btn" id="cloudSaveBtn" type="button">Save to Cloud</button>
+      </div>
+      <small>Cloud saves are protected by your Vercel <b>ADMIN_KEY</b> (you’ll be prompted once per browser).</small>
+
+      <hr />
+
+      <h3>Local (copy/paste)</h3>
       <div class="export-area">
-        <button class="btn" id="exportBtn" type="button">Export Data</button>
-        <button class="btn" id="importBtn" type="button">Import Data</button>
+        <div class="row">
+          <button class="btn" id="exportBtn" type="button">Export to Text</button>
+          <button class="btn" id="importBtn" type="button">Import from Text</button>
+        </div>
         <textarea id="dataBox" class="export" placeholder="Paste exported JSON here to import..."></textarea>
       </div>
+
+      <hr />
+
+      <h3>Local (pick a .json file on disk)</h3>
+      <div class="row">
+        <button class="btn" id="chooseFileBtn" type="button">Choose Data File…</button>
+        <button class="btn" id="saveToFileBtn" type="button" disabled>Save to File</button>
+        <button class="btn" id="loadFromFileBtn" type="button" disabled>Load from File</button>
+      </div>
+      <small id="fileInfo" class="file-info"></small>
+      <p><small>Note: File System Access API works best in Chrome/Edge desktop.</small></p>
+    </div>
+
+    <div class="card">
+      <h2>About</h2>
+      <ul>
+        <li>Photos per person (shown on the tree and profile). If none, initials are shown.</li>
+        <li>Gender badge: <b>M</b> or <b>F</b>. Deceased names appear in red.</li>
+        <li>Compare supports blood + in-law relations with correct direction (e.g., “A is grandmother to B”).</li>
+      </ul>
     </div>
   </section>
 </main>
