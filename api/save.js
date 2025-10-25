@@ -12,7 +12,6 @@ export async function POST(req) {
       headers: { 'Content-Type': 'application/json' }
     });
   }
-
   let payload;
   try {
     payload = await req.json();
