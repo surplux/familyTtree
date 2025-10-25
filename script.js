@@ -6,7 +6,7 @@ function escapeHtml(s){ return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&
 function initials(name){ return name.split(' ').filter(Boolean).map(s=>s[0]).join('').toUpperCase(); }
 
 function normalizeData(data) {
-  // 1) clear and rebuild children from parents
+  // Rebuild children from parents
   Object.values(data.people).forEach(p => { p.children = []; });
   Object.values(data.people).forEach(child => {
     (child.parents || []).forEach(pid => {
@@ -16,7 +16,7 @@ function normalizeData(data) {
       }
     });
   });
-  // 2) spouse symmetry
+  // Spouse symmetry
   Object.values(data.people).forEach(p => { p.spouses = dedupe(p.spouses || []); });
   Object.values(data.people).forEach(p => {
     (p.spouses || []).forEach(sid => {
@@ -26,10 +26,11 @@ function normalizeData(data) {
       }
     });
   });
-  // 3) hygiene
+  // Defaults & hygiene
   Object.values(data.people).forEach(p => {
-    p.gender = p.gender || "";          // "male" | "female" | ""
-    p.marriedCity = p.marriedCity || ""; // shown if female
+    p.gender = (p.gender || "").toLowerCase(); // "male"|"female"|"" 
+    p.marriedCity = p.marriedCity || "";
+    p.photo = p.photo || ""; // data URL for uploaded image
     p.parents  = dedupe((p.parents  || []).filter(id => exists(id, data)));
     p.children = dedupe((p.children || []).filter(id => exists(id, data)));
     p.spouses  = dedupe((p.spouses  || []).filter(id => exists(id, data)));
@@ -42,18 +43,18 @@ let data = JSON.parse(localStorage.getItem('familyData') || 'null');
 if (!data) {
   data = {
     people: {
-      a:{id:'a',name:'John Alder',year:'1945',bio:'Patriarch; loved carpentry and chess.',deceased:true, gender:'male',   marriedCity:'',      parents:[],spouses:['b']},
-      b:{id:'b',name:'Mary Alder',year:'1947',bio:'Matriarch; avid gardener.',         deceased:false,gender:'female', marriedCity:'Portland',parents:[],spouses:['a']},
-      c:{id:'c',name:'Robert Alder',year:'1972',bio:'Software engineer.',              deceased:false,gender:'male',   marriedCity:'',      parents:['a','b'],spouses:['e']},
-      d:{id:'d',name:'Laura Alder',year:'1975',bio:'Teacher and runner.',              deceased:false,gender:'female', marriedCity:'Denver', parents:['a','b'],spouses:[]},
-      e:{id:'e',name:'Sofia Cruz', year:'1974',bio:'Architect.',                       deceased:false,gender:'female', marriedCity:'Seattle',parents:[],spouses:['c']},
-      f:{id:'f',name:'Mia Alder',  year:'2002',bio:'Student of biology.',              deceased:false,gender:'female', marriedCity:'',      parents:['c','e'],spouses:[]},
-      g:{id:'g',name:'Leo Alder',  year:'2006',bio:'Loves music and football.',        deceased:false,gender:'male',   marriedCity:'',      parents:['c','e'],spouses:[]}
+      a:{id:'a',name:'John Alder',year:'1945',bio:'Patriarch; loved carpentry and chess.',deceased:true,  gender:'male',   marriedCity:'',       parents:[],spouses:['b'],photo:''},
+      b:{id:'b',name:'Mary Alder',year:'1947',bio:'Matriarch; avid gardener.',          deceased:false, gender:'female', marriedCity:'Portland',parents:[],spouses:['a'],photo:''},
+      c:{id:'c',name:'Robert Alder',year:'1972',bio:'Software engineer.',               deceased:false, gender:'male',   marriedCity:'',       parents:['a','b'],spouses:['e'],photo:''},
+      d:{id:'d',name:'Laura Alder', year:'1975',bio:'Teacher and runner.',              deceased:false, gender:'female', marriedCity:'Denver',  parents:['a','b'],spouses:[],photo:''},
+      e:{id:'e',name:'Sofia Cruz',  year:'1974',bio:'Architect.',                       deceased:false, gender:'female', marriedCity:'Seattle', parents:[],spouses:['c'],photo:''},
+      f:{id:'f',name:'Mia Alder',   year:'2002',bio:'Student of biology.',              deceased:false, gender:'female', marriedCity:'',       parents:['c','e'],spouses:[],photo:''},
+      g:{id:'g',name:'Leo Alder',   year:'2006',bio:'Loves music and football.',        deceased:false, gender:'male',   marriedCity:'',       parents:['c','e'],spouses:[],photo:''}
     }
   };
 }
 data = normalizeData(data);
-saveData(); // renders + fills selects
+saveData();
 let isAdmin=false;
 
 function saveData(){
@@ -64,19 +65,14 @@ function saveData(){
 
 /** ===== Tree Rendering ===== */
 function renderTree(){
-  // unique spouse-pairs at root
+  // unique spouse-pair roots
   const rawRoots = Object.values(data.people).filter(p => !(p.parents && p.parents.length));
   const seenPairs = new Set(), roots=[];
   for(const r of rawRoots){
     const s = (r.spouses||[]).find(id => exists(id, data) && !(data.people[id].parents||[]).length);
-    if(s){
-      const key=[r.id,s].sort().join('|');
-      if(seenPairs.has(key)) continue;
-      seenPairs.add(key);
-    }
+    if(s){ const key=[r.id,s].sort().join('|'); if(seenPairs.has(key)) continue; seenPairs.add(key); }
     roots.push(r);
   }
-
   const container=document.getElementById('treeContainer');
   container.innerHTML='';
   roots.forEach(r=>container.appendChild(buildNode(r)));
@@ -87,14 +83,21 @@ function buildNode(person){
   wrap.className='node';
 
   const card=document.createElement('div');
-  card.className='person';
+  card.className='person ' + (person.gender==='male' ? 'male' : person.gender==='female' ? 'female' : '');
+  const genderLetter = person.gender==='male' ? 'M' : person.gender==='female' ? 'F' : '';
 
   const spouseName = (person.spouses && person.spouses.length && data.people[person.spouses[0]])
     ? data.people[person.spouses[0]].name + ' (spouse)'
     : '';
 
+  // avatar (photo or initials)
+  const avatar = person.photo
+    ? `<img class="avatar" src="${person.photo}" alt="${escapeHtml(person.name)}">`
+    : `<div class="avatar initials">${initials(person.name)}</div>`;
+
   card.innerHTML = `
-    <div class="avatar">${initials(person.name)}</div>
+    <span class="gender-chip">${genderLetter}</span>
+    ${avatar}
     <div class="name ${person.deceased ? 'deceased' : ''}">${escapeHtml(person.name)}</div>
     ${spouseName ? `<div class="subname">${escapeHtml(spouseName)}</div>` : ``}
     <div class="subname">${escapeHtml(person.year||'')}</div>
@@ -121,11 +124,16 @@ function openPerson(id){
   const spouses = (p.spouses||[]).map(i=>data.people[i]?.name).filter(Boolean).join(', ') || '—';
   const children = (p.children||[]).map(i=>data.people[i]?.name).filter(Boolean).join(', ') || '—';
 
+  const photo = p.photo
+    ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px;margin-bottom:0.5rem;">`
+    : '';
+
   document.getElementById('personDetails').innerHTML=`<div class="card">
+    ${photo}
     <h3 class="${p.deceased?'deceased':''}">${escapeHtml(p.name)}</h3>
     <p><b>Gender:</b> ${p.gender ? cap(p.gender) : '—'}</p>
     <p><b>Born:</b> ${escapeHtml(p.year||'—')}</p>
-    ${p.gender==='female' && p.marriedCity ? `<p><b>Married in:</b> ${escapeHtml(p.marriedCity)}</p>` : ``}
+    ${p.marriedCity ? `<p><b>Married in:</b> ${escapeHtml(p.marriedCity)}</p>` : ``}
     <p>${escapeHtml(p.bio||'')}</p>
     <p><b>Deceased:</b> ${p.deceased ? 'Yes' : 'No'}</p>
     <p><b>Parents:</b> ${escapeHtml(parents)}</p>
@@ -140,11 +148,13 @@ function openPerson(id){
 }
 function closePerson(){ document.getElementById('personModal').style.display='none'; }
 
-/** ===== Admin Editor (gender + married city for women; children auto) ===== */
+/** ===== Admin Editor (photo + gender + married city; children auto) ===== */
+let _pendingPhotoDataURL = ""; // temp holder when choosing a file
 function editPerson(id){
   closePerson();
-  const base={id:Date.now().toString(),name:'',year:'',bio:'',deceased:false,gender:'',marriedCity:'',parents:[],spouses:[]};
+  const base={id:Date.now().toString(),name:'',year:'',bio:'',deceased:false,gender:'',marriedCity:'',parents:[],spouses:[],photo:''};
   const p=id?JSON.parse(JSON.stringify(data.people[id])):base;
+  _pendingPhotoDataURL = ""; // reset
 
   const form=document.getElementById('editForm');
   document.getElementById('editTitle').innerText=id?'Edit Person':'Add Person';
@@ -162,9 +172,15 @@ function editPerson(id){
         <option value="female" ${p.gender==='female'?'selected':''}>Female</option>
       </select>
     </div>
-    <div class='field'><label>Married in (city) — for women</label><input id='pmarriedcity' value='${escapeHtml(p.marriedCity||'')}'></div>
+    <div class='field'><label>Married in (city)</label><input id='pmarriedcity' value='${escapeHtml(p.marriedCity||'')}'></div>
     <div class='field'><label>Bio</label><textarea id='pbio'>${escapeHtml(p.bio||'')}</textarea></div>
     <div class='field'><label><input type="checkbox" id="pdeceased" ${p.deceased?'checked':''}/> Deceased</label></div>
+
+    <div class='field'>
+      <label>Photo</label>
+      <input type="file" id="pphoto" accept="image/*" />
+      <small>Leave empty to keep current photo.</small>
+    </div>
 
     <div class='field'><label>Parents</label>
       <select id='pparents' multiple>${opts}</select></div>
@@ -177,6 +193,16 @@ function editPerson(id){
 
   setMulti('pparents', p.parents||[]);
   setMulti('pspouses', p.spouses||[]);
+
+  // file reader for photo
+  const fileInput = document.getElementById('pphoto');
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files && fileInput.files[0];
+    if(!file) { _pendingPhotoDataURL = ""; return; }
+    const reader = new FileReader();
+    reader.onload = e => { _pendingPhotoDataURL = e.target.result; }; // data URL
+    reader.readAsDataURL(file);
+  });
 }
 function setMulti(id,values){
   const el=document.getElementById(id);
@@ -185,16 +211,20 @@ function setMulti(id,values){
 function closeEdit(){ document.getElementById('editModal').style.display='none'; }
 
 function savePerson(id){
+  const existing = id ? data.people[id] : null;
+  const newPhoto = _pendingPhotoDataURL || (existing ? existing.photo : "");
+
   const p={
     id:id || Date.now().toString(),
     name:document.getElementById('pname').value.trim(),
     year:document.getElementById('pyear').value.trim(),
-    gender:document.getElementById('pgender').value,
+    gender:document.getElementById('pgender').value.toLowerCase(),
     marriedCity:document.getElementById('pmarriedcity').value.trim(),
     bio:document.getElementById('pbio').value,
     deceased:document.getElementById('pdeceased').checked,
     parents:[...document.getElementById('pparents').selectedOptions].map(o=>o.value),
-    spouses:[...document.getElementById('pspouses').selectedOptions].map(o=>o.value)
+    spouses:[...document.getElementById('pspouses').selectedOptions].map(o=>o.value),
+    photo:newPhoto
   };
   data.people[p.id] = p;
   data = normalizeData(data);
@@ -217,8 +247,9 @@ function deletePerson(id){
 
 /** ===== Search ===== */
 const searchInput = document.getElementById('searchInput');
-document.getElementById('searchBtn').onclick = runSearch;
-searchInput.addEventListener('keydown', e => { if(e.key==='Enter') runSearch(); });
+const searchBtn = document.getElementById('searchBtn');
+if (searchBtn) searchBtn.onclick = runSearch;
+if (searchInput) searchInput.addEventListener('keydown', e => { if(e.key==='Enter') runSearch(); });
 
 function runSearch(){
   const q = (searchInput.value || '').trim().toLowerCase();
@@ -229,10 +260,11 @@ function runSearch(){
   box.innerHTML = hits.map(p => `<span class="pill" onclick="openPerson('${p.id}')">${escapeHtml(p.name)}</span>`).join('');
 }
 
-/** ===== Compare with gender-aware labels & full sentence ===== */
+/** ===== Compare: correct direction + in-laws + full sentence ===== */
 function fillSelects(){
   const selA=document.getElementById('personA');
   const selB=document.getElementById('personB');
+  if(!selA || !selB) return;
   selA.innerHTML='<option value="">Select Person A</option>';
   selB.innerHTML='<option value="">Select Person B</option>';
   Object.values(data.people).forEach(p=>{
@@ -240,63 +272,92 @@ function fillSelects(){
     const optB=document.createElement('option'); optB.value=p.id; optB.textContent=p.name; selB.appendChild(optB);
   });
 }
-document.getElementById('compareBtn').onclick=()=>{
+const compareBtn = document.getElementById('compareBtn');
+if (compareBtn) compareBtn.onclick=()=>{
   const a=document.getElementById('personA').value;
   const b=document.getElementById('personB').value;
   const out=document.getElementById('compareResult');
   if(!a||!b){ out.textContent='Select both people.'; return; }
   if(!data.people[a]||!data.people[b]){ out.textContent='Unknown selection.'; return; }
   const rel = relationFromAToB(a,b); // role of A relative to B
-  if(rel.type==='unrelated'){
-    out.textContent = `${data.people[a].name} is not related to ${data.people[b].name}`;
-  } else {
-    out.textContent = `${data.people[a].name} is ${rel.label} to ${data.people[b].name}`;
-  }
+  out.textContent = rel.type==='unrelated'
+    ? `${data.people[a].name} is not related to ${data.people[b].name}`
+    : `${data.people[a].name} is ${rel.label} to ${data.people[b].name}`;
 };
 
-// Compute role of A relative to B (gender-aware where appropriate)
+// family helpers
+function parentsOf(id){ return data.people[id]?.parents || []; }
+function childrenOf(id){ return data.people[id]?.children || []; }
+function spousesOf(id){ return data.people[id]?.spouses || []; }
+function siblingsOf(id){
+  const p = data.people[id]; if(!p) return [];
+  const sib = new Set();
+  (p.parents||[]).forEach(parId=>{
+    (childrenOf(parId)||[]).forEach(c=>{ if(c!==id) sib.add(c); });
+  });
+  return Array.from(sib);
+}
+function shareAParent(a,b){
+  const pA=new Set(parentsOf(a));
+  const pB=new Set(parentsOf(b));
+  for(const x of pA){ if(pB.has(x)) return true; } return false;
+}
+
+// generations upward from x to reach ancestor y (0 if not ancestor)
+function generationsUpTo(x,y){
+  let frontier=[x]; let visited=new Set([x]); let gen=0;
+  while(frontier.length && gen<12){
+    const next=[];
+    for(const id of frontier){
+      if(id===y) return gen;         // y is ancestor of x at distance gen
+      for(const p of parentsOf(id)){ if(!visited.has(p)){ visited.add(p); next.push(p);} }
+    }
+    frontier=next; gen++;
+  }
+  return 0;
+}
+
+// role of A relative to B
 function relationFromAToB(aId,bId){
   if(aId===bId) return {type:'self', label:'the same person'};
   const A=data.people[aId], B=data.people[bId];
 
   // spouses
-  if((A.spouses||[]).includes(bId)){
+  if(spousesOf(aId).includes(bId)){
     const label = A.gender==='male' ? 'husband' : A.gender==='female' ? 'wife' : 'spouse';
     return {type:'spouse', label};
   }
 
-  // direct parent/child (A relative to B)
-  if((B.parents||[]).includes(aId)){
+  // direct parent/child (A -> B)
+  if(parentsOf(bId).includes(aId)){
     const label = A.gender==='male' ? 'father' : A.gender==='female' ? 'mother' : 'parent';
     return {type:'ancestor', label};
   }
-  if((A.parents||[]).includes(bId)){
+  if(parentsOf(aId).includes(bId)){
     const label = A.gender==='male' ? 'son' : A.gender==='female' ? 'daughter' : 'child';
     return {type:'descendant', label};
   }
 
-  // ancestor/descendant (farther)
-  const upA = generationsUpTo(aId,bId);
-  if(upA>1){ // A is ancestor of B at distance >1
-    if(upA===2){
-      const label = A.gender==='male' ? 'grandfather' : A.gender==='female' ? 'grandmother' : 'grandparent';
-      return {type:'ancestor', label};
-    }
-    const gg = upA-2;
-    const base = A.gender==='male' ? 'grandfather' : A.gender==='female' ? 'grandmother' : 'grandparent';
-    const label = `${'great-'.repeat(gg)}${base}`;
-    return {type:'ancestor', label};
-  }
-  const upB = generationsUpTo(bId,aId);
-  if(upB>1){ // A is descendant of B at distance >1
-    if(upB===2){
+  // farther ancestor/descendant
+  const upFromAtoB = generationsUpTo(aId,bId); // go up from A to reach B => A is descendant of B
+  if(upFromAtoB>1){
+    if(upFromAtoB===2){
       const label = A.gender==='male' ? 'grandson' : A.gender==='female' ? 'granddaughter' : 'grandchild';
       return {type:'descendant', label};
     }
-    const gg = upB-2;
+    const gg = upFromAtoB-2;
     const base = A.gender==='male' ? 'grandson' : A.gender==='female' ? 'granddaughter' : 'grandchild';
-    const label = `${'great-'.repeat(gg)}${base}`;
-    return {type:'descendant', label};
+    return {type:'descendant', label:`${'great-'.repeat(gg)}${base}`};
+  }
+  const upFromBtoA = generationsUpTo(bId,aId); // go up from B to reach A => A is ancestor of B
+  if(upFromBtoA>1){
+    if(upFromBtoA===2){
+      const label = A.gender==='male' ? 'grandfather' : A.gender==='female' ? 'grandmother' : 'grandparent';
+      return {type:'ancestor', label};
+    }
+    const gg = upFromBtoA-2;
+    const base = A.gender==='male' ? 'grandfather' : A.gender==='female' ? 'grandmother' : 'grandparent';
+    return {type:'ancestor', label:`${'great-'.repeat(gg)}${base}`};
   }
 
   // siblings
@@ -305,51 +366,61 @@ function relationFromAToB(aId,bId){
     return {type:'sibling', label};
   }
 
-  // aunt/uncle / niece/nephew (A relative to B)
-  for(const p of B.parents||[]){
+  // In-laws
+  // parent-in-law: A is parent of B's spouse
+  for(const s of spousesOf(bId)){
+    if(parentsOf(s).includes(aId)){
+      const label = A.gender==='male' ? 'father-in-law' : A.gender==='female' ? 'mother-in-law' : 'parent-in-law';
+      return {type:'inlaw', label};
+    }
+  }
+  // child-in-law: A is spouse of B's child
+  for(const c of childrenOf(bId)){
+    if(spousesOf(c).includes(aId)){
+      const label = A.gender==='male' ? 'son-in-law' : A.gender==='female' ? 'daughter-in-law' : 'child-in-law';
+      return {type:'inlaw', label};
+    }
+  }
+  // sibling-in-law: A is spouse of B's sibling
+  for(const sib of siblingsOf(bId)){
+    if(spousesOf(sib).includes(aId)){
+      const label = A.gender==='male' ? 'brother-in-law' : A.gender==='female' ? 'sister-in-law' : 'sibling-in-law';
+      return {type:'inlaw', label};
+    }
+  }
+  // sibling-in-law: A is sibling of B's spouse
+  for(const s of spousesOf(bId)){
+    if(shareAParent(aId,s)){
+      const label = A.gender==='male' ? 'brother-in-law' : A.gender==='female' ? 'sister-in-law' : 'sibling-in-law';
+      return {type:'inlaw', label};
+    }
+  }
+
+  // Avuncular (blood)
+  for(const p of parentsOf(bId)){
     if(shareAParent(aId,p)){
       const label = A.gender==='male' ? 'uncle' : A.gender==='female' ? 'aunt' : 'aunt/uncle';
       return {type:'avuncular', label};
     }
   }
-  for(const p of A.parents||[]){
+  for(const p of parentsOf(aId)){
     if(shareAParent(bId,p)){
       const label = A.gender==='male' ? 'nephew' : A.gender==='female' ? 'niece' : 'niece/nephew';
       return {type:'avuncular', label};
     }
   }
 
-  // cousins (gender-neutral)
+  // Cousins (degree + removed)
   const cousin = cousinLabel(aId,bId);
   if(cousin) return {type:'cousin', label:cousin};
 
-  // related (but unknown label)
+  // related fallback
   const path = findPath(aId,bId);
   if(path) return {type:'related', label:'related'};
 
   return {type:'unrelated', label:'unrelated'};
 }
 
-/** ===== Relationship helpers ===== */
-function shareAParent(a,b){
-  const pA=new Set(data.people[a].parents||[]);
-  const pB=new Set(data.people[b].parents||[]);
-  for(const x of pA){ if(pB.has(x)) return true; } return false;
-}
-// generations upward from x to reach ancestor y (0 if not ancestor)
-function generationsUpTo(x,y){
-  let frontier=[x]; let visited=new Set([x]); let gen=0;
-  while(frontier.length && gen<12){
-    const next=[];
-    for(const id of frontier){
-      if(id===y) return gen;
-      const parents=data.people[id]?.parents||[];
-      for(const p of parents){ if(!visited.has(p)){ visited.add(p); next.push(p);} }
-    }
-    frontier=next; gen++;
-  }
-  return 0;
-}
 function cousinLabel(a,b){
   const ancA = ancestorMap(a,8);
   const ancB = ancestorMap(b,8);
@@ -363,7 +434,7 @@ function cousinLabel(a,b){
   if(!best) return null;
   const k = Math.min(best.genA,best.genB)-1; // degree (1 => first cousin)
   const r = Math.abs(best.genA - best.genB); // removed
-  if(k < 1) return null; // would be siblings/avuncular/ancestor otherwise
+  if(k < 1) return null; // otherwise sibling/avuncular/ancestor
   const degree = ['','first','second','third','fourth','fifth','sixth','seventh','eighth'][k] || `${k}th`;
   return r===0 ? `${degree} cousin` : `${degree} cousin ${r}× removed`;
 }
@@ -374,8 +445,7 @@ function ancestorMap(x,limit){
   while(frontier.length && gen<=limit){
     const next=[];
     for(const id of frontier){
-      const parents=data.people[id]?.parents||[];
-      for(const p of parents){
+      for(const p of parentsOf(id)){
         if(!seen.has(p)){ seen.add(p); next.push(p); if(!map.has(p)) map.set(p,gen+1); }
       }
     }
@@ -447,4 +517,94 @@ document.getElementById('importBtn').onclick=()=>{
   }catch(e){alert('Invalid JSON');}
 };
 
+/** ===== File System Access API (optional real JSON file) ===== */
+let _fileHandle = null;
+const chooseBtn = document.getElementById('chooseFileBtn');
+const saveToFileBtn = document.getElementById('saveToFileBtn');
+const loadFromFileBtn = document.getElementById('loadFromFileBtn');
+const fileInfo = document.getElementById('fileInfo');
+
+if(chooseBtn){
+  chooseBtn.onclick = async () => {
+    try{
+      _fileHandle = await window.showOpenFilePicker({
+        types:[{ description:'JSON', accept:{ 'application/json':['.json'] } }],
+        excludeAcceptAllOption:false,
+        multiple:false
+      }).then(handles => handles[0]);
+      if(_fileHandle){
+        saveToFileBtn.disabled = false;
+        loadFromFileBtn.disabled = false;
+        fileInfo.textContent = 'Linked to: ' + _fileHandle.name;
+      }
+    }catch(e){ console.warn(e); }
+  };
+}
+if(saveToFileBtn){
+  saveToFileBtn.onclick = async () => {
+    if(!_fileHandle){ alert('Choose a JSON file first.'); return; }
+    try{
+      const writable = await _fileHandle.createWritable();
+      await writable.write(JSON.stringify(data, null, 2));
+      await writable.close();
+      alert('Saved to file.');
+    }catch(e){ alert('Failed to save: ' + e.message); }
+  };
+}
+if(loadFromFileBtn){
+  loadFromFileBtn.onclick = async () => {
+    if(!_fileHandle){ alert('Choose a JSON file first.'); return; }
+    try{
+      const file = await _fileHandle.getFile();
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      data = normalizeData(parsed);
+      saveData();
+      alert('Loaded from file.');
+    }catch(e){ alert('Failed to load: ' + e.message); }
+  };
+}
+
+/** ===== Cloud persistence (Vercel Functions) ===== */
+// HARD-CODED ADMIN KEY (client-side)
+function getAdminKey() { return 'NDIKE_MY_L0ve'; }
+
+async function cloudLoad() {
+  try {
+    const res = await fetch('/api/load', { method: 'GET', cache: 'no-store' });
+    if (!res.ok) throw new Error(`Load failed: ${res.status}`);
+    const json = await res.json();
+    data = normalizeData(json);
+    saveData();
+    alert('Loaded from cloud.');
+  } catch (e) {
+    alert('Cloud load error: ' + e.message);
+  }
+}
+
+async function cloudSave() {
+  const key = getAdminKey();
+  try {
+    const res = await fetch('/api/save', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-key': key
+      },
+      body: JSON.stringify(data)
+    });
+    const out = await res.json();
+    if (!res.ok || !out.ok) throw new Error(out.error || 'Unknown save error');
+    alert('Saved to cloud.');
+  } catch (e) {
+    alert('Cloud save error: ' + e.message);
+  }
+}
+
+const cloudLoadBtn = document.getElementById('cloudLoadBtn');
+const cloudSaveBtn = document.getElementById('cloudSaveBtn');
+if (cloudLoadBtn) cloudLoadBtn.onclick = cloudLoad;
+if (cloudSaveBtn) cloudSaveBtn.onclick = cloudSave;
+
 /** ===== Init ===== */
+// (everything else is initialized via saveData() at the top)
