@@ -17,6 +17,7 @@
     <div class="tabs">
       <button class="tab active" data-tab="tree">Family Tree</button>
       <button class="tab" data-tab="compare">Compare</button>
+      <button class="tab" data-tab="list">All Names</button> <!-- NEW TAB -->
       <button class="tab" data-tab="about">About / Data</button>
     </div>
 
@@ -27,8 +28,8 @@
     </div>
   </div>
 
-  <!-- SEARCH -->
-  <div class="searchbar">
+  <!-- SEARCH (GLOBAL) -->
+  <div class="searchbar" id="globalSearchBar">
     <input id="searchInput" type="text" placeholder="Search names…" />
     <button id="searchBtn" class="btn" type="button">Search</button>
   </div>
@@ -36,7 +37,9 @@
 
   <!-- TREE -->
   <section id="tree" class="active">
-    <div id="treeContainer" class="tree"></div>
+    <div class="tree-wrapper" id="treeWrapper"> <!-- NEW WRAPPER FOR DRAGGING -->
+      <div id="treeContainer" class="tree"></div>
+    </div>
   </section>
 
   <!-- COMPARE -->
@@ -50,9 +53,21 @@
     <div id="compareResult" class="compare-result"></div>
   </section>
 
+  <!-- ALL NAMES LIST (NEW SECTION) -->
+  <section id="list">
+    <div class="card">
+      <h2>All Registered Names</h2>
+      <div class="searchbar">
+        <input id="listSearchInput" type="text" placeholder="Search names in list…" />
+      </div>
+      <div id="namesListContainer" class="names-list"></div>
+      <div id="listSearchResults" class="search-results"></div>
+    </div>
+  </section>
+
   <!-- ABOUT / DATA -->
   <section id="about">
-    <div class="card">
+    <div class="card" id="dataManagementCard"> <!-- WRAPPER FOR ADMIN-ONLY -->
       <h2>Data Management</h2>
 
       <h3>Cloud (Vercel)</h3>
@@ -96,11 +111,11 @@
   </section>
 </main>
 
-<!-- PERSON MODAL -->
+<!-- PERSON MODAL (GENERIC PROFILE) -->
 <div id="personModal" class="modal" aria-hidden="true">
   <div class="modal-content" role="dialog" aria-modal="true">
     <button class="close" type="button" onclick="closePerson()">✖</button>
-    <div id="personDetails"></div>
+    <div id="personDetails" class="person-profile"></div> <!-- Added class for styling -->
   </div>
 </div>
 
