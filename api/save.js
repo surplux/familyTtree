@@ -1,3 +1,4 @@
+// api/save.js
 import { put } from '@vercel/blob';
 
 export const runtime = 'edge';
@@ -8,6 +9,7 @@ export async function POST(req) {
     const sentKey = req.headers.get('x-admin-key') || '';
 
     if (!adminKey || sentKey !== adminKey) {
+      console.error('Save error: unauthorized', { hasAdminKey: !!adminKey, sentKey });
       return json({ ok: false, error: 'Unauthorized' }, 401);
     }
 
@@ -15,25 +17,28 @@ export async function POST(req) {
     try {
       payload = await req.json();
     } catch {
+      console.error('Save error: invalid JSON body');
       return json({ ok: false, error: 'Invalid JSON' }, 400);
     }
 
     const key = 'family/family-data.json';
 
-    await put(
+    const result = await put(
       key,
       JSON.stringify(payload, null, 2),
       {
         access: 'private',
         addRandomSuffix: false,
-        allowOverwrite: true,               // 👈 IMPORTANT: allow updating the same blob
+        allowOverwrite: true, // 👈 THIS MUST BE HERE
         contentType: 'application/json; charset=utf-8',
       }
     );
 
+    console.log('Save success, blob key:', result.pathname);
+
     return json({ ok: true });
   } catch (e) {
-    console.error('Save error:', e);
+    console.error('Save error: unexpected', e);
     return json({ ok: false, error: e?.message || 'Server error' }, 500);
   }
 }
