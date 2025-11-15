@@ -1,5 +1,5 @@
 // Data structure:
-// data = { people: { id: { id, name, year, bio, gender, marriedCity, parents[], spouses[], children[], photo, deceased } } }
+// data = { people: { id: { id, name, year, deathYear, bio, gender, marriedCity, parents[], spouses[], children[], photo, deceased } } }
 
 let data = { people: {} };
 let isAdmin = false;
@@ -133,10 +133,29 @@ function renderTree() {
     return;
   }
 
+  // Find people with no parents = potential roots
   const rawRoots = people.filter(p => !(p.parents && p.parents.length));
+  const rawRootIds = new Set(rawRoots.map(p => p.id));
+
+  // Suppress female roots who are spouses of male roots
+  const suppressedRootIds = new Set();
+  rawRoots.forEach(r => {
+    if (r.gender === 'female') {
+      const hasMaleRootSpouse = (r.spouses || []).some(sid => {
+        const sp = data.people[sid];
+        return sp && sp.gender === 'male' && rawRootIds.has(sid);
+      });
+      if (hasMaleRootSpouse) {
+        suppressedRootIds.add(r.id);
+      }
+    }
+  });
+
   const seenPairs = new Set();
   const roots = [];
   for (const r of rawRoots) {
+    if (suppressedRootIds.has(r.id)) continue;
+
     const s = (r.spouses || []).find(id => exists(id, data) && !(data.people[id].parents || []).length);
     if (s) {
       const key = [r.id, s].sort().join("|");
@@ -193,20 +212,33 @@ function buildNode(person) {
   nameEl.className = "name";
   nameEl.textContent = person.name || "(Unnamed)";
   if (person.deceased) nameEl.classList.add("deceased");
+  // Make the name itself clickable to open the profile
+  nameEl.onclick = (e) => {
+    e.stopPropagation();
+    openPerson(person.id);
+  };
 
   const secondary = document.createElement("div");
-  secondary.className = "subname"; // New class for subname
+  secondary.className = "subname";
   const year = person.year ? String(person.year) : "";
+  const deathYear = person.deathYear ? String(person.deathYear) : "";
   const spouseId = (person.spouses || [])[0];
   let spouseName = "";
   if (spouseId && exists(spouseId)) {
     spouseName = data.people[spouseId].name || "";
   }
 
-  if (spouseName && year) {
-    secondary.textContent = `${year} · ${spouseName}`;
+  let yearText = "";
+  if (person.deceased && year && deathYear) {
+    yearText = `${year} - ${deathYear}`; // e.g. 1999-2023
   } else if (year) {
-    secondary.textContent = year;
+    yearText = year;
+  }
+
+  if (yearText && spouseName) {
+    secondary.textContent = `${yearText} · ${spouseName}`;
+  } else if (yearText) {
+    secondary.textContent = yearText;
   } else if (spouseName) {
     secondary.textContent = spouseName;
   }
@@ -253,12 +285,26 @@ function openPerson(id) {
     html += `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="person-photo" />`;
   }
   html += `<h2 class="modal-title${p.deceased ? " name deceased" : ""}">${escapeHtml(p.name || "(Unnamed)")}</h2>`;
-  if (p.year) html += `<p><strong>Year:</strong> ${escapeHtml(p.year)}</p>`;
+
+  if (p.year && p.deceased && p.deathYear) {
+    html += `<p><strong>Years:</strong> ${escapeHtml(p.year)} - ${escapeHtml(p.deathYear)}</p>`;
+  } else if (p.year) {
+    html += `<p><strong>Year:</strong> ${escapeHtml(p.year)}</p>`;
+  }
+
   if (p.marriedCity) html += `<p><strong>Married city:</strong> ${escapeHtml(p.marriedCity)}</p>`;
   const parents = (p.parents || []).filter(exists).map(pid => data.people[pid].name);
   if (parents.length) html += `<p><strong>Parents:</strong> ${parents.map(escapeHtml).join(", ")}</p>`;
-  const spouses = (p.spouses || []).filter(exists).map(sid => data.people[sid].name);
-  if (spouses.length) html += `<p><strong>Spouses:</strong> ${spouses.map(escapeHtml).join(", ")}</p>`;
+
+  const spouses = (p.spouses || []).filter(exists).map(sid => data.people[sid]);
+  if (spouses.length) {
+    html += `<p><strong>Spouses:</strong> `;
+    html += spouses.map(sp => {
+      return `<button class="btn secondary" type="button" style="margin:0 0.25rem 0.25rem 0;" onclick="openPerson('${sp.id}')">${escapeHtml(sp.name || "(Unnamed)")}</button>`;
+    }).join(" ");
+    html += `</p>`;
+  }
+
   const kids = (p.children || []).filter(exists).map(cid => data.people[cid].name);
   if (kids.length) html += `<p><strong>Children:</strong> ${kids.map(escapeHtml).join(", ")}</p>`;
   if (p.bio) html += `<p class="modal-bio">${escapeHtml(p.bio)}</p>`;
@@ -290,7 +336,7 @@ function openEdit(id) {
 
   const isNew = !id || !exists(id);
   const p = isNew
-    ? { id: String(Date.now()), name: "", year: "", bio: "", gender: "", marriedCity: "", parents: [], spouses: [], children: [], photo: "", deceased: false }
+    ? { id: String(Date.now()), name: "", year: "", deathYear: "", bio: "", gender: "", marriedCity: "", parents: [], spouses: [], children: [], photo: "", deceased: false }
     : { ...data.people[id] };
 
   const editModal = document.getElementById("editModal");
@@ -309,6 +355,10 @@ function openEdit(id) {
   <div class="field">
     <label>Year</label>
     <input type="text" id="editYear" value="${escapeHtml(p.year || "")}" />
+  </div>
+  <div class="field">
+    <label>Year of Death (if deceased)</label>
+    <input type="text" id="editDeathYear" value="${escapeHtml(p.deathYear || "")}" />
   </div>
   <div class="field">
     <label>Gender</label>
@@ -440,6 +490,7 @@ async function savePerson(id, isNew) {
   }
 
   const year = document.getElementById("editYear").value.trim();
+  const deathYear = document.getElementById("editDeathYear") ? document.getElementById("editDeathYear").value.trim() : "";
   const bio = document.getElementById("editBio").value.trim();
   const gender = document.getElementById("editGender").value;
   const marriedCity = document.getElementById("editMarriedCity").value.trim();
@@ -460,6 +511,7 @@ async function savePerson(id, isNew) {
 
   p.name = name;
   p.year = year;
+  p.deathYear = deathYear;
   p.bio = bio;
   p.gender = gender;
   p.marriedCity = marriedCity;
