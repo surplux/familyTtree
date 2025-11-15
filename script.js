@@ -1,5 +1,5 @@
 // Data structure:
-// data = { people: { id: { id, name, year, deathYear, bio, gender, marriedCity, parents[], spouses[], children[], photo, deceased } } }
+// data = { people: { id: { id, name, birthYear, deathYear, bio, gender, marriedCity, parents[], spouses[], children[], photo, deceased } } }
 
 let data = { people: {} };
 let isAdmin = false;
@@ -32,25 +32,30 @@ function getInitials(name) {
 function normalizeData(d) {
   if (!d.people) d.people = {};
   Object.values(d.people).forEach(p => {
-    p.children = [];
+    p.children = []; // Reset children, will be rebuilt
     p.parents = Array.from(new Set(p.parents || [])).filter(id => exists(id, d));
     p.spouses = Array.from(new Set(p.spouses || [])).filter(id => exists(id, d));
   });
 
+  // Build children array from parents
   Object.values(d.people).forEach(child => {
     (child.parents || []).forEach(pid => {
       if (exists(pid, d)) {
         const parent = d.people[pid];
         parent.children = parent.children || [];
-        parent.children.push(child.id);
+        if (!parent.children.includes(child.id)) { // Prevent duplicates
+          parent.children.push(child.id);
+        }
       }
     });
   });
 
+  // Ensure children arrays are unique and contain existing people
   Object.values(d.people).forEach(p => {
     p.children = Array.from(new Set(p.children || [])).filter(id => exists(id, d));
   });
 
+  // Ensure spouses relationship is reciprocal
   Object.values(d.people).forEach(p => {
     (p.spouses || []).forEach(sid => {
       if (!exists(sid, d)) return;
@@ -65,7 +70,6 @@ function normalizeData(d) {
 
 async function loadData() {
   try {
-    // CHANGED: /data -> /load
     const response = await fetch(`${API_BASE_URL}/load`);
     if (!response.ok) {
       if (response.status === 404) {
@@ -86,6 +90,7 @@ async function loadData() {
   } finally {
     renderTree();
     fillSelects();
+    renderNamesList(); // Also render the names list
   }
 }
 
@@ -95,7 +100,6 @@ async function saveData() {
     return;
   }
   try {
-    // CHANGED: /data -> /save
     const response = await fetch(`${API_BASE_URL}/save`, {
       method: 'POST',
       headers: {
@@ -116,6 +120,7 @@ async function saveData() {
   } finally {
     renderTree();
     fillSelects();
+    renderNamesList(); // Re-render the names list
   }
 }
 
@@ -123,7 +128,7 @@ async function saveData() {
 
 function renderTree() {
   const container = document.getElementById("treeContainer");
-  if (!container) return; // Safeguard if element not found
+  if (!container) return;
 
   container.innerHTML = "";
 
@@ -133,64 +138,80 @@ function renderTree() {
     return;
   }
 
-  // Find people with no parents = potential roots
-  const rawRoots = people.filter(p => !(p.parents && p.parents.length));
-  const rawRootIds = new Set(rawRoots.map(p => p.id));
+  // Determine root nodes based on who has no parents and has children or spouses
+  const roots = people.filter(p => !(p.parents && p.parents.length));
 
-  // Suppress female roots who are spouses of male roots
-  const suppressedRootIds = new Set();
-  rawRoots.forEach(r => {
-    if (r.gender === 'female') {
-      const hasMaleRootSpouse = (r.spouses || []).some(sid => {
-        const sp = data.people[sid];
-        return sp && sp.gender === 'male' && rawRootIds.has(sid);
-      });
-      if (hasMaleRootSpouse) {
-        suppressedRootIds.add(r.id);
+  // Build a set of IDs that have already been rendered as part of another person's node (e.g., female spouses)
+  const renderedIDs = new Set();
+
+  // Iterate over roots, prioritizing males for main branches, then females
+  const sortedRoots = roots.sort((a, b) => {
+    if (a.gender === 'male' && b.gender !== 'male') return -1;
+    if (a.gender !== 'male' && b.gender === 'male') return 1;
+    return 0;
+  });
+
+  sortedRoots.forEach(r => {
+    if (renderedIDs.has(r.id)) return; // Skip if already rendered as a spouse
+
+    // If a male root, render him and his spouse(s) below him
+    if (r.gender === 'male') {
+      container.appendChild(buildNode(r, renderedIDs));
+    } else {
+      // If a female root and not a spouse of a male root, render her as a normal root
+      const isSpouseOfRootMale = r.spouses.some(sId => exists(sId) && !data.people[sId].parents.length && data.people[sId].gender === 'male');
+      if (!isSpouseOfRootMale) {
+        container.appendChild(buildNode(r, renderedIDs));
       }
     }
   });
 
-  const seenPairs = new Set();
-  const roots = [];
-  for (const r of rawRoots) {
-    if (suppressedRootIds.has(r.id)) continue;
+  // Handle people who are not roots, but also not children of any rendered person
+  // This is a fallback for disconnected graphs, could be orphans or other misconfigurations
+  const allRenderedIDs = new Set();
+  const getChildrenRecursive = (personId) => {
+    if (allRenderedIDs.has(personId)) return;
+    allRenderedIDs.add(personId);
+    data.people[personId]?.spouses.forEach(spouseId => allRenderedIDs.add(spouseId)); // Also mark spouses as rendered
+    data.people[personId]?.children.forEach(childId => getChildrenRecursive(childId));
+  };
 
-    const s = (r.spouses || []).find(id => exists(id, data) && !(data.people[id].parents || []).length);
-    if (s) {
-      const key = [r.id, s].sort().join("|");
-      if (seenPairs.has(key)) continue;
-      seenPairs.add(key);
-    }
-    roots.push(r);
-  }
+  sortedRoots.forEach(r => getChildrenRecursive(r.id));
 
-  if (!roots.length) {
-    const wrapper = document.createElement("div");
-    wrapper.className = "node";
-    people.forEach(p => {
-      wrapper.appendChild(buildNode(p));
+  // Add any remaining unrendered people as simple cards at the end (as a fallback)
+  const unrenderedPeople = people.filter(p => !allRenderedIDs.has(p.id));
+  if (unrenderedPeople.length > 0) {
+    const disconnectedWrapper = document.createElement("div");
+    disconnectedWrapper.className = "node disconnected-group";
+    disconnectedWrapper.innerHTML = '<h3>Disconnected individuals:</h3>';
+    unrenderedPeople.forEach(p => {
+      const card = document.createElement("div");
+      card.className = `person ${p.gender || ''}`;
+      card.onclick = () => openPerson(p.id);
+      card.innerHTML = `
+        <div class="avatar initials">${getInitials(p.name)}</div>
+        <div class="name">${escapeHtml(p.name)}</div>
+      `;
+      disconnectedWrapper.appendChild(card);
     });
-    container.appendChild(wrapper);
-    return;
+    container.appendChild(disconnectedWrapper);
   }
-
-  roots.forEach(r => {
-    container.appendChild(buildNode(r));
-  });
 }
 
-function buildNode(person) {
+
+function buildNode(person, renderedIDs = new Set()) {
+  renderedIDs.add(person.id); // Mark this person as rendered
+
   const wrapper = document.createElement("div");
   wrapper.className = "node";
 
   const card = document.createElement("div");
-  card.className = `person ${person.gender || ''}`; // Add gender class for styling
+  card.className = `person ${person.gender || ''}`;
   card.onclick = () => openPerson(person.id);
 
   const genderChip = document.createElement('div');
   genderChip.className = 'gender-chip';
-  genderChip.textContent = person.gender ? person.gender[0].toUpperCase() : ''; // M or F
+  genderChip.textContent = person.gender ? person.gender[0].toUpperCase() : '';
   card.appendChild(genderChip);
 
   const avatar = document.createElement("div");
@@ -212,39 +233,54 @@ function buildNode(person) {
   nameEl.className = "name";
   nameEl.textContent = person.name || "(Unnamed)";
   if (person.deceased) nameEl.classList.add("deceased");
-  // Make the name itself clickable to open the profile
-  nameEl.onclick = (e) => {
-    e.stopPropagation();
-    openPerson(person.id);
-  };
 
   const secondary = document.createElement("div");
   secondary.className = "subname";
-  const year = person.year ? String(person.year) : "";
-  const deathYear = person.deathYear ? String(person.deathYear) : "";
-  const spouseId = (person.spouses || [])[0];
-  let spouseName = "";
-  if (spouseId && exists(spouseId)) {
-    spouseName = data.people[spouseId].name || "";
+
+  let lifeSpan = "";
+  if (person.deceased) {
+    if (person.birthYear && person.deathYear) {
+      lifeSpan = `${person.birthYear}-${person.deathYear}`;
+    } else if (person.birthYear) {
+      lifeSpan = `b. ${person.birthYear}`;
+    } else if (person.deathYear) {
+      lifeSpan = `d. ${person.deathYear}`;
+    }
+  } else if (person.birthYear) {
+    lifeSpan = `b. ${person.birthYear}`;
   }
 
-  let yearText = "";
-  if (person.deceased && year && deathYear) {
-    yearText = `${year} - ${deathYear}`; // e.g. 1999-2023
-  } else if (year) {
-    yearText = year;
-  }
-
-  if (yearText && spouseName) {
-    secondary.textContent = `${yearText} · ${spouseName}`;
-  } else if (yearText) {
-    secondary.textContent = yearText;
-  } else if (spouseName) {
-    secondary.textContent = spouseName;
+  if (lifeSpan) {
+    secondary.textContent = lifeSpan;
+  } else if (person.year) { // Fallback to old 'year' field if no specific birth/death years
+    secondary.textContent = String(person.year);
   }
 
   info.appendChild(nameEl);
   if (secondary.textContent) info.appendChild(secondary);
+
+  // Spouses listed directly under the main person (NEW LOGIC)
+  const spousesToDisplay = (person.spouses || []).filter(sId => exists(sId) && !renderedIDs.has(sId));
+  if (spousesToDisplay.length > 0) {
+    const spouseListDiv = document.createElement('div');
+    spouseListDiv.className = 'spouse-list';
+    spousesToDisplay.forEach(sId => {
+      const spouse = data.people[sId];
+      if (spouse) {
+        const spouseNameEl = document.createElement('span');
+        spouseNameEl.className = `spouse-name ${spouse.deceased ? 'deceased' : ''}`;
+        spouseNameEl.textContent = `Married to ${spouse.name}`;
+        spouseNameEl.onclick = (e) => {
+          e.stopPropagation(); // Prevent opening the main person's profile
+          openPerson(spouse.id);
+        };
+        spouseListDiv.appendChild(spouseNameEl);
+        renderedIDs.add(spouse.id); // Mark spouse as rendered
+      }
+    });
+    info.appendChild(spouseListDiv);
+  }
+
 
   card.appendChild(avatar);
   card.appendChild(info);
@@ -255,20 +291,21 @@ function buildNode(person) {
     const childrenContainer = document.createElement("div");
     childrenContainer.className = "children";
     childrenIds.forEach(cid => {
-      if (!exists(cid)) return;
-      childrenContainer.appendChild(buildNode(data.people[cid]));
+      if (!exists(cid) || renderedIDs.has(cid)) return; // Don't re-render if already part of another node's output
+      childrenContainer.appendChild(buildNode(data.people[cid], renderedIDs));
     });
     wrapper.appendChild(childrenContainer);
   } else {
-    wrapper.classList.add('no-children'); // For styling connectors
+    wrapper.classList.add('no-children');
   }
 
   return wrapper;
 }
 
+
 // --- Modals ---
 
-// For viewing person details
+// For viewing person details (GENERIC PROFILE PAGE)
 function openPerson(id) {
   if (!exists(id)) return;
   const p = data.people[id];
@@ -278,35 +315,37 @@ function openPerson(id) {
   if (!modal || !detailsDiv) return;
 
   modal.setAttribute("aria-hidden", "false");
-  modal.style.display = "block"; // Show the modal
+  modal.style.display = "flex"; // Changed to flex for centering
+  modal.style.alignItems = "center"; // Center vertically
+  modal.style.justifyContent = "center"; // Center horizontally
 
   let html = "";
   if (p.photo) {
-    html += `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="person-photo" />`;
+    html += `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="profile-photo" />`;
+  } else {
+    html += `<div class="avatar initials profile-photo">${getInitials(p.name)}</div>`;
   }
   html += `<h2 class="modal-title${p.deceased ? " name deceased" : ""}">${escapeHtml(p.name || "(Unnamed)")}</h2>`;
 
-  if (p.year && p.deceased && p.deathYear) {
-    html += `<p><strong>Years:</strong> ${escapeHtml(p.year)} - ${escapeHtml(p.deathYear)}</p>`;
-  } else if (p.year) {
-    html += `<p><strong>Year:</strong> ${escapeHtml(p.year)}</p>`;
+  let lifeSpan = "";
+  if (p.birthYear || p.deathYear) {
+    lifeSpan = `${p.birthYear || '?'} - ${p.deceased ? (p.deathYear || '?') : 'Present'}`;
   }
+  if (lifeSpan) html += `<p class="life-span">${lifeSpan}</p>`;
 
-  if (p.marriedCity) html += `<p><strong>Married city:</strong> ${escapeHtml(p.marriedCity)}</p>`;
-  const parents = (p.parents || []).filter(exists).map(pid => data.people[pid].name);
-  if (parents.length) html += `<p><strong>Parents:</strong> ${parents.map(escapeHtml).join(", ")}</p>`;
+  if (p.gender) html += `<p><strong>Gender:</strong> ${escapeHtml(p.gender)}</p>`;
+  if (p.marriedCity) html += `<p><strong>Married in:</strong> ${escapeHtml(p.marriedCity)}</p>`;
+  if (p.year && !p.birthYear && !p.deathYear) html += `<p><strong>Significant Year:</strong> ${escapeHtml(p.year)}</p>`;
 
-  const spouses = (p.spouses || []).filter(exists).map(sid => data.people[sid]);
-  if (spouses.length) {
-    html += `<p><strong>Spouses:</strong> `;
-    html += spouses.map(sp => {
-      return `<button class="btn secondary" type="button" style="margin:0 0.25rem 0.25rem 0;" onclick="openPerson('${sp.id}')">${escapeHtml(sp.name || "(Unnamed)")}</button>`;
-    }).join(" ");
-    html += `</p>`;
-  }
+  const parents = (p.parents || []).filter(exists).map(pid => `<span class="relations-list" onclick="openPerson('${pid}')">${escapeHtml(data.people[pid].name)}</span>`);
+  if (parents.length) html += `<p><strong>Parents:</strong> ${parents.join(", ")}</p>`;
 
-  const kids = (p.children || []).filter(exists).map(cid => data.people[cid].name);
-  if (kids.length) html += `<p><strong>Children:</strong> ${kids.map(escapeHtml).join(", ")}</p>`;
+  const spouses = (p.spouses || []).filter(exists).map(sid => `<span class="relations-list ${data.people[sid].deceased ? 'deceased' : ''}" onclick="openPerson('${sid}')">${escapeHtml(data.people[sid].name)}</span>`);
+  if (spouses.length) html += `<p><strong>Spouses:</strong> ${spouses.join(", ")}</p>`;
+
+  const kids = (p.children || []).filter(exists).map(cid => `<span class="relations-list" onclick="openPerson('${cid}')">${escapeHtml(data.people[cid].name)}</span>`);
+  if (kids.length) html += `<p><strong>Children:</strong> ${kids.join(", ")}</p>`;
+
   if (p.bio) html += `<p class="modal-bio">${escapeHtml(p.bio)}</p>`;
 
   if (isAdmin) {
@@ -322,7 +361,7 @@ function closePerson() {
   const modal = document.getElementById("personModal");
   if (modal) {
     modal.setAttribute("aria-hidden", "true");
-    modal.style.display = "none"; // Hide the modal
+    modal.style.display = "none";
   }
 }
 
@@ -336,7 +375,7 @@ function openEdit(id) {
 
   const isNew = !id || !exists(id);
   const p = isNew
-    ? { id: String(Date.now()), name: "", year: "", deathYear: "", bio: "", gender: "", marriedCity: "", parents: [], spouses: [], children: [], photo: "", deceased: false }
+    ? { id: String(Date.now()), name: "", birthYear: "", deathYear: "", bio: "", gender: "", marriedCity: "", parents: [], spouses: [], children: [], photo: "", deceased: false }
     : { ...data.people[id] };
 
   const editModal = document.getElementById("editModal");
@@ -346,19 +385,13 @@ function openEdit(id) {
 
   editTitle.textContent = isNew ? "Add Person" : `Edit ${p.name || "(Unnamed)"}`;
   editModal.setAttribute("aria-hidden", "false");
-  editModal.style.display = "block"; // Show the modal
+  editModal.style.display = "flex"; // Changed to flex for centering
+  editModal.style.alignItems = "center";
+  editModal.style.justifyContent = "center";
 
   let html = `<div class="field">
     <label>Name</label>
     <input type="text" id="editName" value="${escapeHtml(p.name || "")}" />
-  </div>
-  <div class="field">
-    <label>Year</label>
-    <input type="text" id="editYear" value="${escapeHtml(p.year || "")}" />
-  </div>
-  <div class="field">
-    <label>Year of Death (if deceased)</label>
-    <input type="text" id="editDeathYear" value="${escapeHtml(p.deathYear || "")}" />
   </div>
   <div class="field">
     <label>Gender</label>
@@ -368,6 +401,18 @@ function openEdit(id) {
       <option value="female"${p.gender === "female" ? " selected" : ""}>Female</option>
       <option value="other"${p.gender === "other" ? " selected" : ""}>Other</option>
     </select>
+  </div>
+  <div class="field">
+    <label>Birth Year</label>
+    <input type="text" id="editBirthYear" value="${escapeHtml(p.birthYear || "")}" placeholder="e.g., 1980" />
+  </div>
+  <div class="field row" style="align-items: center;">
+    <input type="checkbox" id="editDeceased" ${p.deceased ? "checked" : ""} style="width: auto; margin-right: 0.5rem;" />
+    <label for="editDeceased" style="margin-bottom:0; flex-grow: 1;">Deceased</label>
+  </div>
+  <div class="field">
+    <label>Death Year</label>
+    <input type="text" id="editDeathYear" value="${escapeHtml(p.deathYear || "")}" placeholder="e.g., 2023" ${p.deceased ? '' : 'disabled'} />
   </div>
   <div class="field">
     <label>Married City</label>
@@ -385,24 +430,16 @@ function openEdit(id) {
     ${p.photo ? `<img src="${p.photo}" style="max-width:100%; max-height:100px; object-fit:cover; margin-top:0.5rem; border-radius:0.5rem;" />` : ''}
   </div>
 
-  <div class="field row">
-    <input type="checkbox" id="editDeceased" ${p.deceased ? "checked" : ""} />
-    <label for="editDeceased" style="margin-bottom:0;">Deceased</label>
-  </div>
-
   <h3>Parents</h3>
   <div id="currentParents">
     ${(p.parents || []).filter(exists).map(pid => `
       <span class="pill">${escapeHtml(data.people[pid].name)} <button onclick="removeParent('${p.id}', '${pid}')" class="btn small danger" style="margin-left:5px;">x</button></span>
     `).join('') || 'None'}
   </div>
-  <div class="field row">
+  <div class="field row" style="position:relative;">
     <label style="flex:1;">Add Parent</label>
-    <select id="parentSelect" style="flex:2;">
-      <option value="">(Select)</option>
-      ${Object.values(data.people).filter(person => person.id !== p.id && !(p.parents || []).includes(person.id)).map(person => `<option value="${person.id}">${escapeHtml(person.name)}</option>`).join('')}
-    </select>
-    <button class="btn small" onclick="addParent('${p.id}')" style="margin-left:0.5rem;">Add</button>
+    <input type="text" id="parentSearchInput" placeholder="Search and select parent..." style="flex:2;" />
+    <div id="parentSuggestions" class="autocomplete-suggestions"></div>
   </div>
 
   <h3>Spouses</h3>
@@ -411,13 +448,10 @@ function openEdit(id) {
       <span class="pill">${escapeHtml(data.people[sid].name)} <button onclick="removeSpouse('${p.id}', '${sid}')" class="btn small danger" style="margin-left:5px;">x</button></span>
     `).join('') || 'None'}
   </div>
-  <div class="field row">
+  <div class="field row" style="position:relative;">
     <label style="flex:1;">Add Spouse</label>
-    <select id="spouseSelect" style="flex:2;">
-      <option value="">(Select)</option>
-      ${Object.values(data.people).filter(person => person.id !== p.id && !(p.spouses || []).includes(person.id)).map(person => `<option value="${person.id}">${escapeHtml(person.name)}</option>`).join('')}
-    </select>
-    <button class="btn small" onclick="addSpouse('${p.id}')" style="margin-left:0.5rem;">Add</button>
+    <input type="text" id="spouseSearchInput" placeholder="Search and select spouse..." style="flex:2;" />
+    <div id="spouseSuggestions" class="autocomplete-suggestions"></div>
   </div>
 
   <div class="row" style="justify-content:flex-end; margin-top:1rem;">
@@ -426,9 +460,14 @@ function openEdit(id) {
   </div>`;
   editForm.innerHTML = html;
 
-  // Event listener for photo upload
+  // Event listeners for deceased checkbox and photo upload
+  document.getElementById('editDeceased').addEventListener('change', function() {
+    document.getElementById('editDeathYear').disabled = !this.checked;
+    if (!this.checked) document.getElementById('editDeathYear').value = '';
+  });
+
   const editPhotoUpload = document.getElementById('editPhotoUpload');
-  if(editPhotoUpload) { // Check if element exists before attaching listener
+  if(editPhotoUpload) {
     editPhotoUpload.addEventListener('change', async (event) => {
       const file = event.target.files[0];
       if (file) {
@@ -440,7 +479,10 @@ function openEdit(id) {
       }
     });
   }
-  fillSelects(); // Call this after innerHTML is set up for parents/spouses, it now updates multiple places
+
+  // Autocomplete setup for Parents and Spouses
+  setupAutocomplete('parentSearchInput', 'parentSuggestions', (selectedId) => addParent(p.id, selectedId));
+  setupAutocomplete('spouseSearchInput', 'spouseSuggestions', (selectedId) => addSpouse(p.id, selectedId));
 }
 
 function closeEdit() {
@@ -489,20 +531,34 @@ async function savePerson(id, isNew) {
     return;
   }
 
-  const year = document.getElementById("editYear").value.trim();
-  const deathYear = document.getElementById("editDeathYear") ? document.getElementById("editDeathYear").value.trim() : "";
+  const birthYear = document.getElementById("editBirthYear").value.trim();
+  const deathYear = document.getElementById("editDeathYear").value.trim();
   const bio = document.getElementById("editBio").value.trim();
   const gender = document.getElementById("editGender").value;
   const marriedCity = document.getElementById("editMarriedCity").value.trim();
   const deceased = document.getElementById("editDeceased").checked;
   let photo = document.getElementById("editPhotoUrl").value.trim();
 
+  // Validate years if provided
+  if (birthYear && !/^\d{4}$/.test(birthYear)) {
+    alert("Birth year must be a 4-digit number.");
+    return;
+  }
+  if (deceased && deathYear && !/^\d{4}$/.test(deathYear)) {
+    alert("Death year must be a 4-digit number.");
+    return;
+  }
+  if (birthYear && deathYear && parseInt(birthYear) > parseInt(deathYear)) {
+    alert("Birth year cannot be after death year.");
+    return;
+  }
+
   if (_pendingPhotoDataURL) {
     const uploadedPhotoUrl = await uploadPhoto(_pendingPhotoDataURL);
     if (uploadedPhotoUrl) {
       photo = uploadedPhotoUrl;
     } else {
-      photo = photo || '';
+      photo = photo || ''; // Fallback to existing photo URL or empty
     }
     _pendingPhotoDataURL = null;
   }
@@ -510,13 +566,14 @@ async function savePerson(id, isNew) {
   const p = isNew ? { id: id, parents: [], spouses: [], children: [] } : data.people[id];
 
   p.name = name;
-  p.year = year;
-  p.deathYear = deathYear;
+  p.birthYear = birthYear;
+  p.deathYear = deceased ? deathYear : ''; // Clear deathYear if not deceased
   p.bio = bio;
   p.gender = gender;
   p.marriedCity = marriedCity;
   p.photo = photo;
   p.deceased = deceased;
+  // Old `year` field removed, rely on birth/deathYear
 
   if (isNew) {
     data.people[id] = p;
@@ -551,16 +608,12 @@ function fillSelects() {
   // Selects for Compare section
   const personASelect = document.getElementById("personA");
   const personBSelect = document.getElementById("personB");
-  // Selects for Edit/Add Person modal
-  const parentSelect = document.getElementById("parentSelect"); // This will be dynamic in openEdit
-  const spouseSelect = document.getElementById("spouseSelect"); // This will be dynamic in openEdit
 
   [personASelect, personBSelect].forEach(sel => {
     if (sel) sel.innerHTML = '<option value="">(Select)</option>';
   });
-  // parentSelect and spouseSelect are handled directly in openEdit as they are within the dynamically loaded form.
 
-  Object.values(data.people).forEach(p => {
+  Object.values(data.people).sort((a,b) => a.name.localeCompare(b.name)).forEach(p => {
     if (personASelect) {
       const optA = document.createElement("option");
       optA.value = p.id;
@@ -576,9 +629,7 @@ function fillSelects() {
   });
 }
 
-function addParent(childId) {
-  const parentSelect = document.getElementById("parentSelect");
-  const parentId = parentSelect?.value; // Use optional chaining
+function addParent(childId, parentId) {
   if (parentId && exists(parentId) && childId !== parentId && !(data.people[childId].parents || []).includes(parentId)) {
     data.people[childId].parents.push(parentId);
     openEdit(childId); // Re-render edit form to show new parent
@@ -590,9 +641,7 @@ function removeParent(childId, parentId) {
   openEdit(childId); // Re-render edit form
 }
 
-function addSpouse(personId) {
-  const spouseSelect = document.getElementById("spouseSelect");
-  const spouseId = spouseSelect?.value; // Use optional chaining
+function addSpouse(personId, spouseId) {
   if (spouseId && exists(spouseId) && personId !== spouseId && !(data.people[personId].spouses || []).includes(spouseId)) {
     data.people[personId].spouses.push(spouseId);
     openEdit(personId); // Re-render edit form to show new spouse
@@ -603,6 +652,82 @@ function removeSpouse(personId, spouseId) {
   data.people[personId].spouses = (data.people[personId].spouses || []).filter(sid => sid !== spouseId);
   openEdit(personId); // Re-render edit form
 }
+
+// --- Autocomplete (NEW) ---
+function setupAutocomplete(inputId, suggestionsId, onSelectCallback) {
+  const input = document.getElementById(inputId);
+  const suggestionsDiv = document.getElementById(suggestionsId);
+  if (!input || !suggestionsDiv) return;
+
+  let currentFocus = -1;
+
+  const filterSuggestions = (query) => {
+    suggestionsDiv.innerHTML = '';
+    currentFocus = -1;
+    if (!query) return;
+
+    const matches = Object.values(data.people).filter(p =>
+      p.name.toLowerCase().includes(query.toLowerCase())
+    ).sort((a,b) => a.name.localeCompare(b.name));
+
+    matches.forEach((p, index) => {
+      const div = document.createElement('div');
+      div.textContent = p.name;
+      div.dataset.id = p.id;
+      div.addEventListener('click', () => {
+        input.value = p.name;
+        suggestionsDiv.innerHTML = '';
+        onSelectCallback(p.id);
+      });
+      suggestionsDiv.appendChild(div);
+    });
+
+    if (matches.length === 0) {
+      suggestionsDiv.innerHTML = '<div>No matches</div>';
+    }
+  };
+
+  input.addEventListener('input', (e) => filterSuggestions(e.target.value));
+
+  input.addEventListener('keydown', (e) => {
+    let items = suggestionsDiv.getElementsByTagName('div');
+    if (e.keyCode === 40) { // Down arrow
+      currentFocus++;
+      addActive(items);
+    } else if (e.keyCode === 38) { // Up arrow
+      currentFocus--;
+      addActive(items);
+    } else if (e.keyCode === 13) { // Enter key
+      e.preventDefault();
+      if (currentFocus > -1) {
+        if (items[currentFocus]) items[currentFocus].click();
+      }
+    }
+  });
+
+  function addActive(items) {
+    if (!items) return false;
+    removeActive(items);
+    if (currentFocus >= items.length) currentFocus = 0;
+    if (currentFocus < 0) currentFocus = (items.length - 1);
+    items[currentFocus].classList.add("selected");
+    items[currentFocus].scrollIntoView({ block: 'nearest' });
+  }
+
+  function removeActive(items) {
+    for (let i = 0; i < items.length; i++) {
+      items[i].classList.remove("selected");
+    }
+  }
+
+  // Close suggestions when clicking outside
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest(`#${suggestionsId}`) && e.target !== input) {
+      suggestionsDiv.innerHTML = '';
+    }
+  });
+}
+
 
 // --- Relationship Checker ---
 
@@ -668,7 +793,7 @@ function findRelationship(idA, idB) {
     }
   }
 
-  return null;
+  return "No direct relationship found.";
 }
 
 // --- Admin Login ---
@@ -700,25 +825,18 @@ function renderAdminButtons() {
   const loginBtn = document.getElementById("loginBtn");
   const logoutBtn = document.getElementById("logoutBtn");
   const addBtn = document.getElementById("addBtn");
-  const cloudSaveBtn = document.getElementById("cloudSaveBtn"); // New ID
+  const cloudSaveBtn = document.getElementById("cloudSaveBtn");
+  const dataManagementCard = document.getElementById("dataManagementCard"); // New element
 
   if (loginBtn) loginBtn.style.display = isAdmin ? "none" : "inline-flex";
   if (logoutBtn) logoutBtn.style.display = isAdmin ? "inline-flex" : "none";
   if (addBtn) addBtn.style.display = isAdmin ? "inline-flex" : "none";
-  if (cloudSaveBtn) cloudSaveBtn.style.display = isAdmin ? "inline-flex" : "none"; // Only show cloud save if admin
+  if (cloudSaveBtn) cloudSaveBtn.style.display = isAdmin ? "inline-flex" : "none";
 
-  // Other admin-only elements in the Data Management section
-  const exportBtn = document.getElementById("exportBtn");
-  const importBtn = document.getElementById("importBtn");
-  const dataBox = document.getElementById("dataBox");
-  const saveToFileBtn = document.getElementById("saveToFileBtn"); // Assuming local file save is also admin-only
-  const loadFromFileBtn = document.getElementById("loadFromFileBtn"); // Assuming local file load is also admin-only
-
-  if (exportBtn) exportBtn.style.display = isAdmin ? "inline-flex" : "none";
-  if (importBtn) importBtn.style.display = isAdmin ? "inline-flex" : "none";
-  if (dataBox) dataBox.style.display = isAdmin ? "block" : "none";
-  if (saveToFileBtn) saveToFileBtn.style.display = isAdmin ? "inline-flex" : "none";
-  if (loadFromFileBtn) loadFromFileBtn.style.display = isAdmin ? "inline-flex" : "none";
+  // Hide/show entire Data Management card
+  if (dataManagementCard) {
+    dataManagementCard.style.display = isAdmin ? "block" : "none";
+  }
 }
 
 // --- Tab Management ---
@@ -738,10 +856,95 @@ function showTab(tabId) {
       section.classList.remove('active');
     }
   });
-  if (tabId === 'tree') renderTree(); // Re-render tree if switching back to it
-  if (tabId === 'compare') fillSelects(); // Re-populate selects for compare tab
+  if (tabId === 'tree') renderTree();
+  if (tabId === 'compare') fillSelects();
+  if (tabId === 'list') renderNamesList(); // Render list when switching to it
 }
 
+// --- Names List (NEW) ---
+function renderNamesList() {
+  const container = document.getElementById('namesListContainer');
+  const searchInput = document.getElementById('listSearchInput');
+  const searchResultsDiv = document.getElementById('listSearchResults');
+
+  if (!container || !searchInput || !searchResultsDiv) return;
+
+  const people = Object.values(data.people).sort((a,b) => a.name.localeCompare(b.name));
+
+  const displayList = (filterQuery = '') => {
+    container.innerHTML = '';
+    searchResultsDiv.innerHTML = '';
+
+    const filteredPeople = people.filter(p =>
+      (p.name || '').toLowerCase().includes(filterQuery.toLowerCase())
+    );
+
+    if (filteredPeople.length === 0 && filterQuery) {
+      searchResultsDiv.innerHTML = '<div class="hint">No matches found.</div>';
+      return;
+    }
+
+    filteredPeople.forEach(p => {
+      const card = document.createElement('div');
+      card.className = 'list-person-card';
+      card.onclick = () => openPerson(p.id);
+
+      let lifeSpan = "";
+      if (p.birthYear || p.deathYear) {
+        lifeSpan = `${p.birthYear || '?'} - ${p.deceased ? (p.deathYear || '?') : 'Present'}`;
+      }
+
+      card.innerHTML = `
+        <div class="name ${p.deceased ? 'deceased' : ''}">${escapeHtml(p.name)}</div>
+        ${lifeSpan ? `<div class="subname">${lifeSpan}</div>` : ''}
+      `;
+      container.appendChild(card);
+    });
+  };
+
+  searchInput.removeEventListener('input', searchInput._listSearchHandler); // Remove old handler
+  searchInput._listSearchHandler = (event) => displayList(event.target.value);
+  searchInput.addEventListener('input', searchInput._listSearchHandler);
+
+  displayList(); // Initial render of the full list
+}
+
+
+// --- Draggable Tree (NEW) ---
+function setupTreeDragging() {
+  const treeWrapper = document.getElementById('treeWrapper');
+  if (!treeWrapper) return;
+
+  let isDragging = false;
+  let startX;
+  let scrollLeft;
+
+  treeWrapper.addEventListener('mousedown', (e) => {
+    isDragging = true;
+    treeWrapper.classList.add('grabbing');
+    startX = e.pageX - treeWrapper.offsetLeft;
+    scrollLeft = treeWrapper.scrollLeft;
+    e.preventDefault(); // Prevent text selection
+  });
+
+  treeWrapper.addEventListener('mouseleave', () => {
+    isDragging = false;
+    treeWrapper.classList.remove('grabbing');
+  });
+
+  treeWrapper.addEventListener('mouseup', () => {
+    isDragging = false;
+    treeWrapper.classList.remove('grabbing');
+  });
+
+  treeWrapper.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    e.preventDefault();
+    const x = e.pageX - treeWrapper.offsetLeft;
+    const walk = (x - startX) * 1.5; // Adjust scroll speed
+    treeWrapper.scrollLeft = scrollLeft - walk;
+  });
+}
 
 // --- Initial Load and Event Listeners (within DOMContentLoaded) ---
 
@@ -781,6 +984,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       }
       renderAdminButtons();
       renderTree(); // Re-render to show/hide edit buttons on tree
+      renderNamesList(); // Re-render names list to update admin features
     });
   }
 
@@ -791,6 +995,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       alert("Logged out as admin.");
       renderAdminButtons();
       renderTree(); // Re-render to show/hide edit buttons on tree
+      renderNamesList(); // Re-render names list to update admin features
     });
   }
 
@@ -799,9 +1004,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     addBtn.addEventListener("click", () => openEdit(null));
   }
 
-  // --- Search ---
+  // --- Global Search ---
   const searchInput = document.getElementById("searchInput");
-  const searchBtn = document.getElementById("searchBtn"); // New Search button
+  const searchBtn = document.getElementById("searchBtn");
 
   if (searchInput) {
     searchInput.addEventListener("input", function (event) {
@@ -815,7 +1020,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const matches = Object.values(data.people).filter(p =>
         (p.name || "").toLowerCase().includes(query) ||
         (p.bio || "").toLowerCase().includes(query)
-      );
+      ).sort((a,b) => a.name.localeCompare(b.name));
 
       matches.forEach(p => {
         const pill = document.createElement("span");
@@ -831,11 +1036,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
-  if (searchBtn) { // Optional: if you want search button to trigger search
+  if (searchBtn) {
       searchBtn.addEventListener("click", () => {
           const searchInput = document.getElementById("searchInput");
           if (searchInput) {
-              searchInput.dispatchEvent(new Event('input')); // Trigger input event
+              searchInput.dispatchEvent(new Event('input'));
           }
       });
   }
@@ -867,14 +1072,14 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   if (cloudLoadBtn) {
     cloudLoadBtn.addEventListener("click", async () => {
-      await loadData(); // Simply calls the existing loadData function
+      await loadData();
       alert("Data loaded from cloud!");
     });
   }
 
   if (cloudSaveBtn) {
     cloudSaveBtn.addEventListener("click", async () => {
-      await saveData(); // Simply calls the existing saveData function
+      await saveData();
       alert("Data saved to cloud!");
     });
   }
@@ -978,6 +1183,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           normalizeData(data);
           renderTree();
           fillSelects();
+          renderNamesList();
           alert(`Data loaded from ${currentFileHandle.name}`);
         } else {
           alert("Invalid data structure in file.");
@@ -999,5 +1205,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   // --- Initial Setup ---
   await checkAdminStatus(); // Check admin login state
   await loadData(); // Load data from remote on page load
+  setupTreeDragging(); // Setup draggable tree
   showTab(activeTab); // Show the initial tab
 });
