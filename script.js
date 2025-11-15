@@ -65,7 +65,8 @@ function normalizeData(d) {
 
 async function loadData() {
   try {
-    const response = await fetch(`${API_BASE_URL}/data`);
+    // CHANGED: /data -> /load
+    const response = await fetch(`${API_BASE_URL}/load`);
     if (!response.ok) {
       if (response.status === 404) {
         console.warn("No remote data found, starting with empty tree.");
@@ -94,7 +95,8 @@ async function saveData() {
     return;
   }
   try {
-    const response = await fetch(`${API_BASE_URL}/data`, {
+    // CHANGED: /data -> /save
+    const response = await fetch(`${API_BASE_URL}/save`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
