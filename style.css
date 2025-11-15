@@ -24,7 +24,19 @@ section.active { display: block; }
   background: #eef2ff; border: 1px solid #dbe4ff; border-radius: 999px; cursor: pointer; }
 .search-results .pill:hover { background: #dbe7ff; }
 
-.tree { text-align: center; }
+/* Tree Wrapper for dragging */
+.tree-wrapper {
+  overflow-x: auto; /* Enable horizontal scrolling */
+  overflow-y: hidden;
+  padding-bottom: 10px; /* Space for scrollbar */
+  cursor: grab;
+  user-select: none;
+}
+.tree-wrapper.grabbing {
+  cursor: grabbing;
+}
+
+.tree { text-align: center; padding: 1rem; min-width: max-content; } /* Adjust min-width for dragging */
 
 /* Person cards */
 .person {
@@ -32,6 +44,7 @@ section.active { display: block; }
   box-shadow: 0 1px 5px rgba(0,0,0,0.15);
   padding: 0.6rem 0.9rem; margin: 0.5rem; cursor: pointer;
   transition: transform 0.2s; min-width: 190px; position: relative;
+  text-align: center; /* Center content within person card */
 }
 .person:hover { transform: scale(1.05); }
 
@@ -43,7 +56,7 @@ section.active { display: block; }
 
 .avatar {
   width: 66px; height: 66px; border-radius: 50%;
-  display: block; margin: 0 auto 0.35rem;
+  display: block; margin: 0 auto 0.35rem; /* Centered */
   font-weight: 700; font-size: 1.1rem; line-height: 66px;
   border: 2px solid transparent; object-fit: cover; overflow: hidden;
 }
@@ -54,6 +67,27 @@ section.active { display: block; }
 .name { font-weight: 700; line-height: 1.1; }
 .name.deceased { color: #c0392b; } /* red */
 .subname { font-size: 0.82rem; color: #6b7280; margin-top: 0.15rem; }
+
+/* Spouses listed below a main person (NEW) */
+.spouse-list {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: #555;
+}
+.spouse-list .spouse-name {
+  display: block; /* Each spouse on a new line */
+  cursor: pointer;
+  text-decoration: underline;
+  color: #3a6ea5;
+  margin-top: 0.2rem;
+}
+.spouse-list .spouse-name:hover {
+  color: #2a5a8a;
+}
+.spouse-list .spouse-name.deceased {
+  color: #c0392b; /* red */
+}
+
 
 /* Alignment & connectors */
 .node { position: relative; display: inline-block; text-align: center; vertical-align: top; margin: 0 12px; }
@@ -81,6 +115,129 @@ textarea.export { width: 100%; height: 150px; }
 .file-info { display:block; margin-top: 0.35rem; color:#555; font-size:0.9rem; }
 
 /* Modals */
-.modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); }
-.modal-content { background:#fff; border-radius:8px; padding:1rem; max-width:650px; margin:5% auto; position:relative; }
+.modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index: 1000; }
+.modal-content { background:#fff; border-radius:8px; padding:1rem; max-width:650px; margin:5% auto; position:relative; max-height: 90vh; overflow-y: auto; }
 .close { position:absolute; top:10px; right:10px; border:none; background:none; font-size:1.2rem; cursor:pointer; }
+
+/* Person Profile within modal (NEW) */
+.person-profile {
+  text-align: center;
+}
+.person-profile .profile-photo {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  object-fit: cover;
+  margin-bottom: 1rem;
+  border: 3px solid #3a6ea5;
+}
+.person-profile h2.modal-title {
+  margin-bottom: 0.5rem;
+  font-size: 2rem;
+}
+.person-profile .life-span {
+  font-size: 1.1rem;
+  color: #6b7280;
+  margin-bottom: 1rem;
+}
+.person-profile p {
+  margin-bottom: 0.75rem;
+  font-size: 1.05rem;
+  text-align: left;
+}
+.person-profile p strong {
+  color: #333;
+  min-width: 100px;
+  display: inline-block;
+}
+.person-profile .modal-bio {
+  border-top: 1px solid #eee;
+  padding-top: 1rem;
+  margin-top: 1rem;
+  font-style: italic;
+  color: #555;
+}
+.person-profile .relations-list {
+  display: inline-block; /* For better alignment of multiple items */
+  margin-right: 0.5rem;
+  cursor: pointer;
+  text-decoration: underline;
+  color: #3a6ea5;
+}
+.person-profile .relations-list:hover {
+  color: #2a5a8a;
+}
+.person-profile .relations-list.deceased {
+  color: #c0392b;
+}
+
+/* Autocomplete suggestions (NEW) */
+.autocomplete-container {
+  position: relative;
+  width: 100%;
+}
+.autocomplete-suggestions {
+  position: absolute;
+  border: 1px solid #cbd5e1;
+  background-color: #fff;
+  max-height: 150px;
+  overflow-y: auto;
+  z-index: 10;
+  width: 100%;
+  left: 0;
+  right: 0;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+  border-radius: 6px;
+  margin-top: 2px;
+}
+.autocomplete-suggestions div {
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+  border-bottom: 1px solid #eee;
+}
+.autocomplete-suggestions div:last-child {
+  border-bottom: none;
+}
+.autocomplete-suggestions div:hover,
+.autocomplete-suggestions .selected {
+  background-color: #f0f4ff;
+}
+
+/* Names List page (NEW) */
+.names-list {
+  margin-top: 1rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+.names-list .list-person-card {
+  background: #f9f9f9;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 0.75rem;
+  cursor: pointer;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  transition: background-color 0.2s;
+}
+.names-list .list-person-card:hover {
+  background-color: #f0f4ff;
+}
+.names-list .list-person-card .name {
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+.names-list .list-person-card .subname {
+  font-size: 0.75rem;
+  color: #777;
+}
+
+/* Edit Modal field specific styling */
+#editForm .field .row .pill {
+  margin-bottom: 0.5rem;
+}
+
+/* Make sure the main content is below the header */
+main {
+  padding-top: 1rem;
+}
