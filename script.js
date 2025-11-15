@@ -1,610 +1,881 @@
-/** ===== Utils & Normalization ===== */
-const dedupe = arr => Array.from(new Set(arr || []));
-const exists = (id, data) => !!data.people[id];
-const cap = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
-function escapeHtml(s){ return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
-function initials(name){ return name.split(' ').filter(Boolean).map(s=>s[0]).join('').toUpperCase(); }
+// Data structure:
+// data = { people: { id: { id, name, year, bio, gender, marriedCity, parents[], spouses[], children[], photo, deceased } } }
 
-function normalizeData(data) {
-  // Rebuild children from parents
-  Object.values(data.people).forEach(p => { p.children = []; });
-  Object.values(data.people).forEach(child => {
+let data = { people: {} };
+let isAdmin = false;
+let _pendingPhotoDataURL = null;
+let currentFileHandle = null;
+
+// --- API Endpoints ---
+const API_BASE_URL = '/api'; // Assuming your API routes are under /api
+
+// --- Utility ---
+
+function exists(id, d = data) {
+  return d.people && d.people[id];
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+}
+
+function getInitials(name) {
+  if (!name) return "?";
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0][0].toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+// --- Normalization ---
+
+function normalizeData(d) {
+  if (!d.people) d.people = {};
+  // clear children
+  Object.values(d.people).forEach(p => {
+    p.children = [];
+    p.parents = Array.from(new Set(p.parents || [])).filter(id => exists(id, d));
+    p.spouses = Array.from(new Set(p.spouses || [])).filter(id => exists(id, d));
+  });
+
+  // rebuild children from parents
+  Object.values(d.people).forEach(child => {
     (child.parents || []).forEach(pid => {
-      if (exists(pid, data)) {
-        const par = data.people[pid];
-        par.children = dedupe([...(par.children || []), child.id]);
+      if (exists(pid, d)) {
+        const parent = d.people[pid];
+        parent.children = parent.children || [];
+        parent.children.push(child.id);
       }
     });
   });
-  // Spouse symmetry
-  Object.values(data.people).forEach(p => { p.spouses = dedupe(p.spouses || []); });
-  Object.values(data.people).forEach(p => {
+
+  // dedupe children and cleanup invalid ids
+  Object.values(d.people).forEach(p => {
+    p.children = Array.from(new Set(p.children || [])).filter(id => exists(id, d));
+  });
+
+  // ensure spouse symmetry
+  Object.values(d.people).forEach(p => {
     (p.spouses || []).forEach(sid => {
-      if (exists(sid, data)) {
-        const s = data.people[sid];
-        s.spouses = dedupe([...(s.spouses || []), p.id]);
-      }
+      if (!exists(sid, d)) return;
+      const sp = d.people[sid];
+      sp.spouses = sp.spouses || [];
+      if (!sp.spouses.includes(p.id)) sp.spouses.push(p.id);
     });
   });
-  // Defaults & hygiene
-  Object.values(data.people).forEach(p => {
-    p.gender = (p.gender || "").toLowerCase(); // "male"|"female"|"" 
-    p.marriedCity = p.marriedCity || "";
-    p.photo = p.photo || ""; // data URL for uploaded image
-    p.parents  = dedupe((p.parents  || []).filter(id => exists(id, data)));
-    p.children = dedupe((p.children || []).filter(id => exists(id, data)));
-    p.spouses  = dedupe((p.spouses  || []).filter(id => exists(id, data)));
-  });
-  return data;
 }
 
-/** ===== Seed / Storage ===== */
-let data = JSON.parse(localStorage.getItem('familyData') || 'null');
-if (!data) {
-  data = {
-    people: {
-      a:{id:'a',name:'John Alder',year:'1945',bio:'Patriarch; loved carpentry and chess.',deceased:true,  gender:'male',   marriedCity:'',       parents:[],spouses:['b'],photo:''},
-      b:{id:'b',name:'Mary Alder',year:'1947',bio:'Matriarch; avid gardener.',          deceased:false, gender:'female', marriedCity:'Portland',parents:[],spouses:['a'],photo:''},
-      c:{id:'c',name:'Robert Alder',year:'1972',bio:'Software engineer.',               deceased:false, gender:'male',   marriedCity:'',       parents:['a','b'],spouses:['e'],photo:''},
-      d:{id:'d',name:'Laura Alder', year:'1975',bio:'Teacher and runner.',              deceased:false, gender:'female', marriedCity:'Denver',  parents:['a','b'],spouses:[],photo:''},
-      e:{id:'e',name:'Sofia Cruz',  year:'1974',bio:'Architect.',                       deceased:false, gender:'female', marriedCity:'Seattle', parents:[],spouses:['c'],photo:''},
-      f:{id:'f',name:'Mia Alder',   year:'2002',bio:'Student of biology.',              deceased:false, gender:'female', marriedCity:'',       parents:['c','e'],spouses:[],photo:''},
-      g:{id:'g',name:'Leo Alder',   year:'2006',bio:'Loves music and football.',        deceased:false, gender:'male',   marriedCity:'',       parents:['c','e'],spouses:[],photo:''}
-    }
-  };
-}
-data = normalizeData(data);
-saveData();
-let isAdmin=false;
+// --- Storage (now using API) ---
 
-function saveData(){
-  localStorage.setItem('familyData', JSON.stringify(data));
-  renderTree();
-  fillSelects();
-}
-
-/** ===== Tree Rendering ===== */
-function renderTree(){
-  // unique spouse-pair roots
-  const rawRoots = Object.values(data.people).filter(p => !(p.parents && p.parents.length));
-  const seenPairs = new Set(), roots=[];
-  for(const r of rawRoots){
-    const s = (r.spouses||[]).find(id => exists(id, data) && !(data.people[id].parents||[]).length);
-    if(s){ const key=[r.id,s].sort().join('|'); if(seenPairs.has(key)) continue; seenPairs.add(key); }
-    roots.push(r);
-  }
-  const container=document.getElementById('treeContainer');
-  container.innerHTML='';
-  roots.forEach(r=>container.appendChild(buildNode(r)));
-}
-
-function buildNode(person){
-  const wrap=document.createElement('div');
-  wrap.className='node';
-
-  const card=document.createElement('div');
-  card.className='person ' + (person.gender==='male' ? 'male' : person.gender==='female' ? 'female' : '');
-  const genderLetter = person.gender==='male' ? 'M' : person.gender==='female' ? 'F' : '';
-
-  const spouseName = (person.spouses && person.spouses.length && data.people[person.spouses[0]])
-    ? data.people[person.spouses[0]].name + ' (spouse)'
-    : '';
-
-  // avatar (photo or initials)
-  const avatar = person.photo
-    ? `<img class="avatar" src="${person.photo}" alt="${escapeHtml(person.name)}">`
-    : `<div class="avatar initials">${initials(person.name)}</div>`;
-
-  card.innerHTML = `
-    <span class="gender-chip">${genderLetter}</span>
-    ${avatar}
-    <div class="name ${person.deceased ? 'deceased' : ''}">${escapeHtml(person.name)}</div>
-    ${spouseName ? `<div class="subname">${escapeHtml(spouseName)}</div>` : ``}
-    <div class="subname">${escapeHtml(person.year||'')}</div>
-  `;
-  card.onclick=()=>openPerson(person.id);
-  wrap.appendChild(card);
-
-  const kids=(person.children||[]).map(id=>data.people[id]).filter(Boolean);
-  if(kids.length){
-    const group=document.createElement('div');
-    group.className='children';
-    kids.forEach(k => group.appendChild(buildNode(k)));
-    wrap.appendChild(group);
-  } else {
-    wrap.classList.add('no-children');
-  }
-  return wrap;
-}
-
-/** ===== Person Modal ===== */
-function openPerson(id){
-  const p=data.people[id];
-  const parents = (p.parents||[]).map(i=>data.people[i]?.name).filter(Boolean).join(', ') || '—';
-  const spouses = (p.spouses||[]).map(i=>data.people[i]?.name).filter(Boolean).join(', ') || '—';
-  const children = (p.children||[]).map(i=>data.people[i]?.name).filter(Boolean).join(', ') || '—';
-
-  const photo = p.photo
-    ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" style="width:100%;max-height:220px;object-fit:cover;border-radius:8px;margin-bottom:0.5rem;">`
-    : '';
-
-  document.getElementById('personDetails').innerHTML=`<div class="card">
-    ${photo}
-    <h3 class="${p.deceased?'deceased':''}">${escapeHtml(p.name)}</h3>
-    <p><b>Gender:</b> ${p.gender ? cap(p.gender) : '—'}</p>
-    <p><b>Born:</b> ${escapeHtml(p.year||'—')}</p>
-    ${p.marriedCity ? `<p><b>Married in:</b> ${escapeHtml(p.marriedCity)}</p>` : ``}
-    <p>${escapeHtml(p.bio||'')}</p>
-    <p><b>Deceased:</b> ${p.deceased ? 'Yes' : 'No'}</p>
-    <p><b>Parents:</b> ${escapeHtml(parents)}</p>
-    <p><b>Spouses:</b> ${escapeHtml(spouses)}</p>
-    <p><b>Children:</b> ${escapeHtml(children)}</p>
-    ${isAdmin?`<div class='actions'>
-      <button class='btn' onclick='editPerson("${id}")'>Edit</button>
-      <button class='btn danger' onclick='deletePerson("${id}")'>Delete</button>
-    </div>`:''}
-  </div>`;
-  document.getElementById('personModal').style.display='block';
-}
-function closePerson(){ document.getElementById('personModal').style.display='none'; }
-
-/** ===== Admin Editor (photo + gender + married city; children auto) ===== */
-let _pendingPhotoDataURL = ""; // temp holder when choosing a file
-function editPerson(id){
-  closePerson();
-  const base={id:Date.now().toString(),name:'',year:'',bio:'',deceased:false,gender:'',marriedCity:'',parents:[],spouses:[],photo:''};
-  const p=id?JSON.parse(JSON.stringify(data.people[id])):base;
-  _pendingPhotoDataURL = ""; // reset
-
-  const form=document.getElementById('editForm');
-  document.getElementById('editTitle').innerText=id?'Edit Person':'Add Person';
-
-  const peopleList = Object.values(data.people);
-  const opts=peopleList.map(q=>`<option value='${q.id}'>${escapeHtml(q.name)}</option>`).join('');
-
-  form.innerHTML=`
-    <div class='field'><label>Name</label><input id='pname' value='${escapeHtml(p.name)}'></div>
-    <div class='field'><label>Year</label><input id='pyear' value='${escapeHtml(p.year||'')}'></div>
-    <div class='field'><label>Gender</label>
-      <select id='pgender'>
-        <option value="" ${p.gender===''?'selected':''}>—</option>
-        <option value="male" ${p.gender==='male'?'selected':''}>Male</option>
-        <option value="female" ${p.gender==='female'?'selected':''}>Female</option>
-      </select>
-    </div>
-    <div class='field'><label>Married in (city)</label><input id='pmarriedcity' value='${escapeHtml(p.marriedCity||'')}'></div>
-    <div class='field'><label>Bio</label><textarea id='pbio'>${escapeHtml(p.bio||'')}</textarea></div>
-    <div class='field'><label><input type="checkbox" id="pdeceased" ${p.deceased?'checked':''}/> Deceased</label></div>
-
-    <div class='field'>
-      <label>Photo</label>
-      <input type="file" id="pphoto" accept="image/*" />
-      <small>Leave empty to keep current photo.</small>
-    </div>
-
-    <div class='field'><label>Parents</label>
-      <select id='pparents' multiple>${opts}</select></div>
-    <div class='field'><label>Spouses</label>
-      <select id='pspouses' multiple>${opts}</select></div>
-
-    <div class='actions'><button class='btn' onclick='savePerson("${id||''}")'>Save</button></div>
-  `;
-  document.getElementById('editModal').style.display='block';
-
-  setMulti('pparents', p.parents||[]);
-  setMulti('pspouses', p.spouses||[]);
-
-  // file reader for photo
-  const fileInput = document.getElementById('pphoto');
-  fileInput.addEventListener('change', () => {
-    const file = fileInput.files && fileInput.files[0];
-    if(!file) { _pendingPhotoDataURL = ""; return; }
-    const reader = new FileReader();
-    reader.onload = e => { _pendingPhotoDataURL = e.target.result; }; // data URL
-    reader.readAsDataURL(file);
-  });
-}
-function setMulti(id,values){
-  const el=document.getElementById(id);
-  [...el.options].forEach(o=>{ o.selected = (values||[]).includes(o.value); });
-}
-function closeEdit(){ document.getElementById('editModal').style.display='none'; }
-
-function savePerson(id){
-  const existing = id ? data.people[id] : null;
-  const newPhoto = _pendingPhotoDataURL || (existing ? existing.photo : "");
-
-  const p={
-    id:id || Date.now().toString(),
-    name:document.getElementById('pname').value.trim(),
-    year:document.getElementById('pyear').value.trim(),
-    gender:document.getElementById('pgender').value.toLowerCase(),
-    marriedCity:document.getElementById('pmarriedcity').value.trim(),
-    bio:document.getElementById('pbio').value,
-    deceased:document.getElementById('pdeceased').checked,
-    parents:[...document.getElementById('pparents').selectedOptions].map(o=>o.value),
-    spouses:[...document.getElementById('pspouses').selectedOptions].map(o=>o.value),
-    photo:newPhoto
-  };
-  data.people[p.id] = p;
-  data = normalizeData(data);
-  saveData();
-  closeEdit();
-}
-
-function deletePerson(id){
-  if(!confirm('Delete this person?')) return;
-  delete data.people[id];
-  Object.values(data.people).forEach(q => {
-    q.parents  = (q.parents  || []).filter(x => x !== id);
-    q.spouses  = (q.spouses  || []).filter(x => x !== id);
-    q.children = (q.children || []).filter(x => x !== id);
-  });
-  data = normalizeData(data);
-  saveData();
-  closePerson();
-}
-
-/** ===== Search ===== */
-const searchInput = document.getElementById('searchInput');
-const searchBtn = document.getElementById('searchBtn');
-if (searchBtn) searchBtn.onclick = runSearch;
-if (searchInput) searchInput.addEventListener('keydown', e => { if(e.key==='Enter') runSearch(); });
-
-function runSearch(){
-  const q = (searchInput.value || '').trim().toLowerCase();
-  const box = document.getElementById('searchResults');
-  if(!q){ box.innerHTML=''; return; }
-  const hits = Object.values(data.people).filter(p => p.name.toLowerCase().includes(q));
-  if(!hits.length){ box.innerHTML = `<em>No matches.</em>`; return; }
-  box.innerHTML = hits.map(p => `<span class="pill" onclick="openPerson('${p.id}')">${escapeHtml(p.name)}</span>`).join('');
-}
-
-/** ===== Compare: correct direction + in-laws + full sentence ===== */
-function fillSelects(){
-  const selA=document.getElementById('personA');
-  const selB=document.getElementById('personB');
-  if(!selA || !selB) return;
-  selA.innerHTML='<option value="">Select Person A</option>';
-  selB.innerHTML='<option value="">Select Person B</option>';
-  Object.values(data.people).forEach(p=>{
-    const optA=document.createElement('option'); optA.value=p.id; optA.textContent=p.name; selA.appendChild(optA);
-    const optB=document.createElement('option'); optB.value=p.id; optB.textContent=p.name; selB.appendChild(optB);
-  });
-}
-const compareBtn = document.getElementById('compareBtn');
-if (compareBtn) compareBtn.onclick=()=>{
-  const a=document.getElementById('personA').value;
-  const b=document.getElementById('personB').value;
-  const out=document.getElementById('compareResult');
-  if(!a||!b){ out.textContent='Select both people.'; return; }
-  if(!data.people[a]||!data.people[b]){ out.textContent='Unknown selection.'; return; }
-  const rel = relationFromAToB(a,b); // role of A relative to B
-  out.textContent = rel.type==='unrelated'
-    ? `${data.people[a].name} is not related to ${data.people[b].name}`
-    : `${data.people[a].name} is ${rel.label} to ${data.people[b].name}`;
-};
-
-// family helpers
-function parentsOf(id){ return data.people[id]?.parents || []; }
-function childrenOf(id){ return data.people[id]?.children || []; }
-function spousesOf(id){ return data.people[id]?.spouses || []; }
-function siblingsOf(id){
-  const p = data.people[id]; if(!p) return [];
-  const sib = new Set();
-  (p.parents||[]).forEach(parId=>{
-    (childrenOf(parId)||[]).forEach(c=>{ if(c!==id) sib.add(c); });
-  });
-  return Array.from(sib);
-}
-function shareAParent(a,b){
-  const pA=new Set(parentsOf(a));
-  const pB=new Set(parentsOf(b));
-  for(const x of pA){ if(pB.has(x)) return true; } return false;
-}
-
-// generations upward from x to reach ancestor y (0 if not ancestor)
-function generationsUpTo(x,y){
-  let frontier=[x]; let visited=new Set([x]); let gen=0;
-  while(frontier.length && gen<12){
-    const next=[];
-    for(const id of frontier){
-      if(id===y) return gen;         // y is ancestor of x at distance gen
-      for(const p of parentsOf(id)){ if(!visited.has(p)){ visited.add(p); next.push(p);} }
-    }
-    frontier=next; gen++;
-  }
-  return 0;
-}
-
-// role of A relative to B
-function relationFromAToB(aId,bId){
-  if(aId===bId) return {type:'self', label:'the same person'};
-  const A=data.people[aId], B=data.people[bId];
-
-  // spouses
-  if(spousesOf(aId).includes(bId)){
-    const label = A.gender==='male' ? 'husband' : A.gender==='female' ? 'wife' : 'spouse';
-    return {type:'spouse', label};
-  }
-
-  // direct parent/child (A -> B)
-  if(parentsOf(bId).includes(aId)){
-    const label = A.gender==='male' ? 'father' : A.gender==='female' ? 'mother' : 'parent';
-    return {type:'ancestor', label};
-  }
-  if(parentsOf(aId).includes(bId)){
-    const label = A.gender==='male' ? 'son' : A.gender==='female' ? 'daughter' : 'child';
-    return {type:'descendant', label};
-  }
-
-  // farther ancestor/descendant
-  const upFromAtoB = generationsUpTo(aId,bId); // go up from A to reach B => A is descendant of B
-  if(upFromAtoB>1){
-    if(upFromAtoB===2){
-      const label = A.gender==='male' ? 'grandson' : A.gender==='female' ? 'granddaughter' : 'grandchild';
-      return {type:'descendant', label};
-    }
-    const gg = upFromAtoB-2;
-    const base = A.gender==='male' ? 'grandson' : A.gender==='female' ? 'granddaughter' : 'grandchild';
-    return {type:'descendant', label:`${'great-'.repeat(gg)}${base}`};
-  }
-  const upFromBtoA = generationsUpTo(bId,aId); // go up from B to reach A => A is ancestor of B
-  if(upFromBtoA>1){
-    if(upFromBtoA===2){
-      const label = A.gender==='male' ? 'grandfather' : A.gender==='female' ? 'grandmother' : 'grandparent';
-      return {type:'ancestor', label};
-    }
-    const gg = upFromBtoA-2;
-    const base = A.gender==='male' ? 'grandfather' : A.gender==='female' ? 'grandmother' : 'grandparent';
-    return {type:'ancestor', label:`${'great-'.repeat(gg)}${base}`};
-  }
-
-  // siblings
-  if(shareAParent(aId,bId)){
-    const label = A.gender==='male' ? 'brother' : A.gender==='female' ? 'sister' : 'sibling';
-    return {type:'sibling', label};
-  }
-
-  // In-laws
-  // parent-in-law: A is parent of B's spouse
-  for(const s of spousesOf(bId)){
-    if(parentsOf(s).includes(aId)){
-      const label = A.gender==='male' ? 'father-in-law' : A.gender==='female' ? 'mother-in-law' : 'parent-in-law';
-      return {type:'inlaw', label};
-    }
-  }
-  // child-in-law: A is spouse of B's child
-  for(const c of childrenOf(bId)){
-    if(spousesOf(c).includes(aId)){
-      const label = A.gender==='male' ? 'son-in-law' : A.gender==='female' ? 'daughter-in-law' : 'child-in-law';
-      return {type:'inlaw', label};
-    }
-  }
-  // sibling-in-law: A is spouse of B's sibling
-  for(const sib of siblingsOf(bId)){
-    if(spousesOf(sib).includes(aId)){
-      const label = A.gender==='male' ? 'brother-in-law' : A.gender==='female' ? 'sister-in-law' : 'sibling-in-law';
-      return {type:'inlaw', label};
-    }
-  }
-  // sibling-in-law: A is sibling of B's spouse
-  for(const s of spousesOf(bId)){
-    if(shareAParent(aId,s)){
-      const label = A.gender==='male' ? 'brother-in-law' : A.gender==='female' ? 'sister-in-law' : 'sibling-in-law';
-      return {type:'inlaw', label};
-    }
-  }
-
-  // Avuncular (blood)
-  for(const p of parentsOf(bId)){
-    if(shareAParent(aId,p)){
-      const label = A.gender==='male' ? 'uncle' : A.gender==='female' ? 'aunt' : 'aunt/uncle';
-      return {type:'avuncular', label};
-    }
-  }
-  for(const p of parentsOf(aId)){
-    if(shareAParent(bId,p)){
-      const label = A.gender==='male' ? 'nephew' : A.gender==='female' ? 'niece' : 'niece/nephew';
-      return {type:'avuncular', label};
-    }
-  }
-
-  // Cousins (degree + removed)
-  const cousin = cousinLabel(aId,bId);
-  if(cousin) return {type:'cousin', label:cousin};
-
-  // related fallback
-  const path = findPath(aId,bId);
-  if(path) return {type:'related', label:'related'};
-
-  return {type:'unrelated', label:'unrelated'};
-}
-
-function cousinLabel(a,b){
-  const ancA = ancestorMap(a,8);
-  const ancB = ancestorMap(b,8);
-  let best = null;
-  for(const [id,genA] of ancA){
-    if(ancB.has(id)){
-      const genB = ancB.get(id);
-      best = best ? (genA+genB < best.genA+best.genB ? {id,genA,genB} : best) : {id,genA,genB};
-    }
-  }
-  if(!best) return null;
-  const k = Math.min(best.genA,best.genB)-1; // degree (1 => first cousin)
-  const r = Math.abs(best.genA - best.genB); // removed
-  if(k < 1) return null; // otherwise sibling/avuncular/ancestor
-  const degree = ['','first','second','third','fourth','fifth','sixth','seventh','eighth'][k] || `${k}th`;
-  return r===0 ? `${degree} cousin` : `${degree} cousin ${r}× removed`;
-}
-function ancestorMap(x,limit){
-  const map=new Map();
-  let frontier=[x]; let gen=0;
-  const seen=new Set([x]);
-  while(frontier.length && gen<=limit){
-    const next=[];
-    for(const id of frontier){
-      for(const p of parentsOf(id)){
-        if(!seen.has(p)){ seen.add(p); next.push(p); if(!map.has(p)) map.set(p,gen+1); }
-      }
-    }
-    frontier=next; gen++;
-  }
-  return map;
-}
-function findPath(a,b){
-  if(a===b) return [a];
-  const queue=[a]; const prev={}; const seen=new Set([a]);
-  while(queue.length){
-    const cur=queue.shift();
-    const p=data.people[cur];
-    const neighbors=[...(p.parents||[]),...(p.spouses||[]),...(p.children||[])];
-    for(const n of neighbors){
-      if(!data.people[n]||seen.has(n)) continue;
-      seen.add(n); prev[n]=cur;
-      if(n===b){
-        const path=[b]; let t=b;
-        while(t!==a){ t=prev[t]; path.push(t); }
-        return path.reverse();
-      }
-      queue.push(n);
-    }
-  }
-  return null;
-}
-
-/** ===== Auth & Tabs & Export/Import ===== */
-function login(){
-  const pw=prompt('Enter admin password:');
-  if(pw==='admin'){isAdmin=true;
-    document.getElementById('addBtn').style.display='inline-block';
-    document.getElementById('logoutBtn').style.display='inline-block';
-    document.getElementById('loginBtn').style.display='none';
-    alert('Admin mode enabled');
-  } else alert('Wrong password');
-}
-function logout(){
-  isAdmin=false;
-  document.getElementById('addBtn').style.display='none';
-  document.getElementById('logoutBtn').style.display='none';
-  document.getElementById('loginBtn').style.display='inline-block';
-}
-document.getElementById('loginBtn').onclick=login;
-document.getElementById('logoutBtn').onclick=logout;
-document.getElementById('addBtn').onclick=()=>editPerson('');
-
-document.querySelectorAll('.tab').forEach(t=>{
-  t.onclick=()=>{
-    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-    t.classList.add('active');
-    const tab=t.dataset.tab;
-    document.querySelectorAll('section').forEach(s=>s.classList.remove('active'));
-    document.getElementById(tab).classList.add('active');
-  };
-});
-
-document.getElementById('exportBtn').onclick=()=>{
-  document.getElementById('dataBox').value=JSON.stringify(data,null,2);
-};
-document.getElementById('importBtn').onclick=()=>{
-  try{
-    const json=JSON.parse(document.getElementById('dataBox').value);
-    data=json;
-    data = normalizeData(data);
-    saveData();
-    alert('Data imported successfully.');
-  }catch(e){alert('Invalid JSON');}
-};
-
-/** ===== File System Access API (optional real JSON file) ===== */
-let _fileHandle = null;
-const chooseBtn = document.getElementById('chooseFileBtn');
-const saveToFileBtn = document.getElementById('saveToFileBtn');
-const loadFromFileBtn = document.getElementById('loadFromFileBtn');
-const fileInfo = document.getElementById('fileInfo');
-
-if(chooseBtn){
-  chooseBtn.onclick = async () => {
-    try{
-      _fileHandle = await window.showOpenFilePicker({
-        types:[{ description:'JSON', accept:{ 'application/json':['.json'] } }],
-        excludeAcceptAllOption:false,
-        multiple:false
-      }).then(handles => handles[0]);
-      if(_fileHandle){
-        saveToFileBtn.disabled = false;
-        loadFromFileBtn.disabled = false;
-        fileInfo.textContent = 'Linked to: ' + _fileHandle.name;
-      }
-    }catch(e){ console.warn(e); }
-  };
-}
-if(saveToFileBtn){
-  saveToFileBtn.onclick = async () => {
-    if(!_fileHandle){ alert('Choose a JSON file first.'); return; }
-    try{
-      const writable = await _fileHandle.createWritable();
-      await writable.write(JSON.stringify(data, null, 2));
-      await writable.close();
-      alert('Saved to file.');
-    }catch(e){ alert('Failed to save: ' + e.message); }
-  };
-}
-if(loadFromFileBtn){
-  loadFromFileBtn.onclick = async () => {
-    if(!_fileHandle){ alert('Choose a JSON file first.'); return; }
-    try{
-      const file = await _fileHandle.getFile();
-      const text = await file.text();
-      const parsed = JSON.parse(text);
-      data = normalizeData(parsed);
-      saveData();
-      alert('Loaded from file.');
-    }catch(e){ alert('Failed to load: ' + e.message); }
-  };
-}
-
-/** ===== Cloud persistence (Vercel Functions) ===== */
-// HARD-CODED ADMIN KEY (client-side)
-function getAdminKey() { return 'NDIKE_MY_L0ve'; }
-
-async function cloudLoad() {
+async function loadData() {
   try {
-    const res = await fetch('/api/load', { method: 'GET', cache: 'no-store' });
-    if (!res.ok) throw new Error(`Load failed: ${res.status}`);
-    const json = await res.json();
-    data = normalizeData(json);
-    saveData();
-    alert('Loaded from cloud.');
+    const response = await fetch(`${API_BASE_URL}/data`);
+    if (!response.ok) {
+      if (response.status === 404) {
+        console.warn("No remote data found, starting with empty tree.");
+        data = { people: {} };
+      } else {
+        throw new Error(`Failed to load data: ${response.statusText}`);
+      }
+    } else {
+      const remoteData = await response.json();
+      data = remoteData;
+      normalizeData(data);
+    }
   } catch (e) {
-    alert('Cloud load error: ' + e.message);
+    console.error("Error loading data from API:", e);
+    alert("Failed to load family tree data from server. Please check your connection or try again later.");
+    data = { people: {} }; // Fallback to empty data on error
+  } finally {
+    renderTree();
+    fillSelects();
   }
 }
 
-async function cloudSave() {
-  const key = getAdminKey();
+async function saveData() {
+  if (!isAdmin) {
+    alert("You must be logged in as an administrator to save changes.");
+    return;
+  }
   try {
-    const res = await fetch('/api/save', {
+    const response = await fetch(`${API_BASE_URL}/data`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-admin-key': key
+        'X-Admin-Key': localStorage.getItem('adminKey') || '', // Send admin key for authorization
       },
-      body: JSON.stringify(data)
+      body: JSON.stringify(data),
     });
-    const out = await res.json();
-    if (!res.ok || !out.ok) throw new Error(out.error || 'Unknown save error');
-    alert('Saved to cloud.');
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(`Failed to save data: ${errorData.error || response.statusText}`);
+    }
+    console.log("Data saved remotely.");
   } catch (e) {
-    alert('Cloud save error: ' + e.message);
+    console.error("Error saving data to API:", e);
+    alert("Failed to save family tree data to server. " + e.message);
+  } finally {
+    renderTree();
+    fillSelects();
   }
 }
 
-const cloudLoadBtn = document.getElementById('cloudLoadBtn');
-const cloudSaveBtn = document.getElementById('cloudSaveBtn');
-if (cloudLoadBtn) cloudLoadBtn.onclick = cloudLoad;
-if (cloudSaveBtn) cloudSaveBtn.onclick = cloudSave;
+// --- Tree rendering ---
 
-/** ===== Init ===== */
-// (everything else is initialized via saveData() at the top)
+function renderTree() {
+  const container = document.getElementById("treeContainer");
+  container.innerHTML = "";
+
+  const people = Object.values(data.people);
+  if (!people.length) {
+    container.innerHTML = '<div class="empty-message">No people yet. Log in as admin and add your first person.</div>';
+    return;
+  }
+
+  // roots = people without parents
+  const rawRoots = people.filter(p => !(p.parents && p.parents.length));
+
+  // avoid duplicate spouse-pair roots
+  const seenPairs = new Set();
+  const roots = [];
+  for (const r of rawRoots) {
+    const s = (r.spouses || []).find(id => exists(id, data) && !(data.people[id].parents || []).length);
+    if (s) {
+      const key = [r.id, s].sort().join("|");
+      if (seenPairs.has(key)) continue;
+      seenPairs.add(key);
+    }
+    roots.push(r);
+  }
+
+  if (!roots.length) {
+    // fallback: show everyone flat
+    const wrapper = document.createElement("div");
+    wrapper.className = "node";
+    people.forEach(p => {
+      wrapper.appendChild(buildNode(p));
+    });
+    container.appendChild(wrapper);
+    return;
+  }
+
+  roots.forEach(r => {
+    container.appendChild(buildNode(r));
+  });
+}
+
+function buildNode(person) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "node";
+
+  const card = document.createElement("div");
+  card.className = "person";
+  card.onclick = () => openPerson(person.id);
+
+  const avatar = document.createElement("div");
+  if (person.photo) {
+    avatar.className = "avatar";
+    avatar.style.backgroundImage = `url(${person.photo})`;
+    avatar.style.backgroundSize = "cover";
+    avatar.style.backgroundPosition = "center";
+  } else {
+    avatar.className = "avatar initials";
+    avatar.textContent = getInitials(person.name);
+  }
+
+  const info = document.createElement("div");
+  info.className = "info";
+
+  const nameEl = document.createElement("div");
+  nameEl.className = "name";
+  nameEl.textContent = person.name || "(Unnamed)";
+  if (person.deceased) nameEl.classList.add("deceased");
+
+  const secondary = document.createElement("div");
+  secondary.className = "secondary";
+  const year = person.year ? String(person.year) : "";
+  const spouseId = (person.spouses || [])[0];
+  let spouseName = "";
+  if (spouseId && exists(spouseId)) {
+    spouseName = data.people[spouseId].name || "";
+  }
+
+  if (spouseName && year) {
+    secondary.textContent = `${year} · ${spouseName}`;
+  } else if (year) {
+    secondary.textContent = year;
+  } else if (spouseName) {
+    secondary.textContent = spouseName;
+  }
+
+  info.appendChild(nameEl);
+  if (secondary.textContent) info.appendChild(secondary);
+
+  card.appendChild(avatar);
+  card.appendChild(info);
+  wrapper.appendChild(card);
+
+  const childrenIds = person.children || [];
+  if (childrenIds.length) {
+    const childrenContainer = document.createElement("div");
+    childrenContainer.className = "children";
+    childrenIds.forEach(cid => {
+      if (!exists(cid)) return;
+      childrenContainer.appendChild(buildNode(data.people[cid]));
+    });
+    wrapper.appendChild(childrenContainer);
+  }
+
+  return wrapper;
+}
+
+// --- Modal (view person) ---
+
+function openPerson(id) {
+  if (!exists(id)) return;
+  const p = data.people[id];
+
+  const backdrop = document.getElementById("personModalBackdrop");
+  const body = document.getElementById("personModalBody");
+  backdrop.classList.add("open");
+  body.innerHTML = "";
+
+  let html = "";
+
+  if (p.photo) {
+    html += `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="person-photo" />`;
+  }
+
+  html += `<h2 class="modal-title${p.deceased ? " name deceased" : ""}">${escapeHtml(p.name || "(Unnamed)")}</h2>`;
+
+  if (p.year) {
+    html += `<div class="modal-section"><strong>Year:</strong> ${escapeHtml(p.year)}</div>`;
+  }
+
+  if (p.marriedCity) {
+    html += `<div class="modal-section"><strong>Married city:</strong> ${escapeHtml(p.marriedCity)}</div>`;
+  }
+
+  const parents = (p.parents || []).filter(exists).map(pid => data.people[pid].name);
+  if (parents.length) {
+    html += `<div class="modal-section"><strong>Parents:</strong> ${parents.map(escapeHtml).join(", ")}</div>`;
+  }
+
+  const spouses = (p.spouses || []).filter(exists).map(sid => data.people[sid].name);
+  if (spouses.length) {
+    html += `<div class="modal-section"><strong>Spouses:</strong> ${spouses.map(escapeHtml).join(", ")}</div>`;
+  }
+
+  const kids = (p.children || []).filter(exists).map(cid => data.people[cid].name);
+  if (kids.length) {
+    html += `<div class="modal-section"><strong>Children:</strong> ${kids.map(escapeHtml).join(", ")}</div>`;
+  }
+
+  if (p.bio) {
+    html += `<div class="modal-bio">${escapeHtml(p.bio)}</div>`;
+  }
+
+  if (isAdmin) {
+    html += `<div class="modal-footer">
+      <button class="btn small" onclick="editPerson('${id}')">Edit</button>
+      <button class="btn small danger" onclick="deletePerson('${id}')">Delete</button>
+    </div>`;
+  }
+
+  body.innerHTML = html;
+}
+
+function closePersonModal() {
+  document.getElementById("personModalBackdrop").classList.remove("open");
+  _pendingPhotoDataURL = null; // Clear pending photo on modal close
+}
+
+// --- Edit / add person ---
+
+function fillSelects() {
+  const selA = document.getElementById("relPersonA");
+  const selB = document.getElementById("relPersonB");
+  const parentSelect = document.getElementById("parentSelect");
+  const spouseSelect = document.getElementById("spouseSelect");
+  [selA, selB, parentSelect, spouseSelect].forEach(sel => {
+    if (!sel) return;
+    sel.innerHTML = '<option value="">(Select)</option>';
+  });
+
+  Object.values(data.people).forEach(p => {
+    if (selA && selB) {
+      const optA = document.createElement("option");
+      optA.value = p.id;
+      optA.textContent = p.name;
+      selA.appendChild(optA);
+
+      const optB = document.createElement("option");
+      optB.value = p.id;
+      optB.textContent = p.name;
+      selB.appendChild(optB);
+    }
+    if (parentSelect && spouseSelect) {
+      const optP = document.createElement("option");
+      optP.value = p.id;
+      optP.textContent = p.name;
+      parentSelect.appendChild(optP);
+
+      const optS = document.createElement("option");
+      optS.value = p.id;
+      optS.textContent = p.name;
+      spouseSelect.appendChild(optS);
+    }
+  });
+}
+
+function editPerson(id) {
+  if (!isAdmin) {
+    alert("You must be admin to edit.");
+    return;
+  }
+  const isNew = !id || !exists(id);
+  const p = isNew
+    ? { id: String(Date.now()), name: "", year: "", bio: "", gender: "", marriedCity: "", parents: [], spouses: [], children: [], photo: "", deceased: false }
+    : { ...data.people[id] };
+
+  const backdrop = document.getElementById("personModalBackdrop");
+  const body = document.getElementById("personModalBody");
+  backdrop.classList.add("open");
+
+  let html = `<h2 class="modal-title">${isNew ? "Add person" : "Edit person"}</h2>`;
+  html += `<div class="person-form">
+    <label>
+      Name
+      <input type="text" id="editName" value="${escapeHtml(p.name || "")}" />
+    </label>
+    <label>
+      Year
+      <input type="text" id="editYear" value="${escapeHtml(p.year || "")}" />
+    </label>
+    <label>
+      Gender
+      <select id="editGender">
+        <option value=""></option>
+        <option value="male"${p.gender === "male" ? " selected" : ""}>Male</option>
+        <option value="female"${p.gender === "female" ? " selected" : ""}>Female</option>
+        <option value="other"${p.gender === "other" ? " selected" : ""}>Other</option>
+      </select>
+    </label>
+    <label>
+      Married City
+      <input type="text" id="editMarriedCity" value="${escapeHtml(p.marriedCity || "")}" />
+    </label>
+    <label>
+      Bio
+      <textarea id="editBio">${escapeHtml(p.bio || "")}</textarea>
+    </label>
+
+    <label>
+      Photo (URL or upload)
+      <input type="text" id="editPhotoUrl" value="${escapeHtml(p.photo || "")}" placeholder="Paste image URL or upload below" />
+      <input type="file" id="editPhotoUpload" accept="image/*" style="margin-top:0.3rem;" />
+      ${p.photo ? `<img src="${p.photo}" style="max-width:100%; max-height:100px; object-fit:cover; margin-top:0.5rem; border-radius:0.5rem;" />` : ''}
+    </label>
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="editDeceased" ${p.deceased ? "checked" : ""} />
+      <label for="editDeceased">Deceased</label>
+    </div>
+
+    <h3>Parents</h3>
+    <div id="currentParents">
+      ${(p.parents || []).filter(exists).map(pid => `
+        <span class="pill">${escapeHtml(data.people[pid].name)} <button onclick="removeParent('${p.id}', '${pid}')" class="btn small danger" style="margin-left:5px;">x</button></span>
+      `).join('') || 'None'}
+    </div>
+    <label>
+      Add Parent
+      <select id="parentSelect">
+        <option value="">(Select)</option>
+        ${Object.values(data.people).filter(person => person.id !== p.id && !(p.parents || []).includes(person.id)).map(person => `<option value="${person.id}">${escapeHtml(person.name)}</option>`).join('')}
+      </select>
+      <button class="btn small" onclick="addParent('${p.id}')" style="margin-top:0.3rem;">Add</button>
+    </label>
+
+    <h3>Spouses</h3>
+    <div id="currentSpouses">
+      ${(p.spouses || []).filter(exists).map(sid => `
+        <span class="pill">${escapeHtml(data.people[sid].name)} <button onclick="removeSpouse('${p.id}', '${sid}')" class="btn small danger" style="margin-left:5px;">x</button></span>
+      `).join('') || 'None'}
+    </div>
+    <label>
+      Add Spouse
+      <select id="spouseSelect">
+        <option value="">(Select)</option>
+        ${Object.values(data.people).filter(person => person.id !== p.id && !(p.spouses || []).includes(person.id)).map(person => `<option value="${person.id}">${escapeHtml(person.name)}</option>`).join('')}
+      </select>
+      <button class="btn small" onclick="addSpouse('${p.id}')" style="margin-top:0.3rem;">Add</button>
+    </label>
+
+    <div class="modal-footer">
+      <button class="btn secondary" onclick="closePersonModal()">Cancel</button>
+      <button class="btn primary" onclick="savePerson('${p.id}', ${isNew})">Save</button>
+    </div>
+  </div>`;
+  body.innerHTML = html;
+
+  fillSelects(); // Call this after innerHTML is set up for parents/spouses
+
+  // Event listener for photo upload
+  document.getElementById('editPhotoUpload').addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        _pendingPhotoDataURL = e.target.result; // Store Data URL temporarily
+        // Optionally, display a preview
+        // document.getElementById('editPhotoUrl').value = 'PENDING UPLOAD...';
+      };
+      reader.readAsDataURL(file);
+    }
+  });
+}
+
+async function uploadPhoto(photoDataURL) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/upload-photo`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Admin-Key': localStorage.getItem('adminKey') || '',
+      },
+      body: JSON.stringify({ dataURL: photoDataURL }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(`Failed to upload photo: ${errorData.error || response.statusText}`);
+    }
+    const result = await response.json();
+    return result.url; // Return the URL of the uploaded photo
+  } catch (e) {
+    console.error("Photo upload error:", e);
+    alert("Failed to upload photo: " + e.message);
+    return null;
+  }
+}
+
+
+async function savePerson(id, isNew) {
+  if (!isAdmin) {
+    alert("You must be admin to save changes.");
+    return;
+  }
+
+  const name = document.getElementById("editName").value.trim();
+  if (!name) {
+    alert("Name is required.");
+    return;
+  }
+
+  const year = document.getElementById("editYear").value.trim();
+  const bio = document.getElementById("editBio").value.trim();
+  const gender = document.getElementById("editGender").value;
+  const marriedCity = document.getElementById("editMarriedCity").value.trim();
+  const deceased = document.getElementById("editDeceased").checked;
+  let photo = document.getElementById("editPhotoUrl").value.trim();
+
+  // If a new photo was uploaded, upload it to Blob storage
+  if (_pendingPhotoDataURL) {
+    const uploadedPhotoUrl = await uploadPhoto(_pendingPhotoDataURL);
+    if (uploadedPhotoUrl) {
+      photo = uploadedPhotoUrl;
+    } else {
+      // If upload failed, revert to existing photo or clear
+      photo = photo || ''; // keep existing URL if there was one, else clear
+    }
+    _pendingPhotoDataURL = null; // Clear after attempt
+  }
+
+  const p = isNew ? { id: id, parents: [], spouses: [], children: [] } : data.people[id];
+
+  p.name = name;
+  p.year = year;
+  p.bio = bio;
+  p.gender = gender;
+  p.marriedCity = marriedCity;
+  p.photo = photo;
+  p.deceased = deceased;
+
+  if (isNew) {
+    data.people[id] = p;
+  }
+  normalizeData(data); // Re-normalize after changes
+  await saveData(); // Save to remote
+  closePersonModal();
+}
+
+async function deletePerson(id) {
+  if (!isAdmin) {
+    alert("You must be admin to delete.");
+    return;
+  }
+  if (!confirm(`Are you sure you want to delete ${data.people[id].name}? This cannot be undone.`)) {
+    return;
+  }
+
+  // Remove person from all relationships
+  Object.values(data.people).forEach(person => {
+    person.parents = (person.parents || []).filter(pid => pid !== id);
+    person.spouses = (person.spouses || []).filter(sid => sid !== id);
+    person.children = (person.children || []).filter(cid => cid !== id);
+  });
+
+  delete data.people[id];
+  normalizeData(data); // Re-normalize after deletion
+  await saveData(); // Save to remote
+  closePersonModal();
+}
+
+function addParent(childId) {
+  const parentSelect = document.getElementById("parentSelect");
+  const parentId = parentSelect.value;
+  if (parentId && exists(parentId) && childId !== parentId && !(data.people[childId].parents || []).includes(parentId)) {
+    data.people[childId].parents.push(parentId);
+    editPerson(childId); // Re-render edit form to show new parent
+  }
+}
+
+function removeParent(childId, parentId) {
+  data.people[childId].parents = (data.people[childId].parents || []).filter(pid => pid !== parentId);
+  editPerson(childId); // Re-render edit form
+}
+
+function addSpouse(personId) {
+  const spouseSelect = document.getElementById("spouseSelect");
+  const spouseId = spouseSelect.value;
+  if (spouseId && exists(spouseId) && personId !== spouseId && !(data.people[personId].spouses || []).includes(spouseId)) {
+    data.people[personId].spouses.push(spouseId);
+    editPerson(personId); // Re-render edit form to show new spouse
+  }
+}
+
+function removeSpouse(personId, spouseId) {
+  data.people[personId].spouses = (data.people[personId].spouses || []).filter(sid => sid !== spouseId);
+  editPerson(personId); // Re-render edit form
+}
+
+
+// --- Search ---
+
+document.getElementById("searchInput").addEventListener("input", function (event) {
+  const query = event.target.value.toLowerCase();
+  const resultsDiv = document.getElementById("searchResults");
+  resultsDiv.innerHTML = "";
+  if (query.length < 2) return;
+
+  const matches = Object.values(data.people).filter(p =>
+    (p.name || "").toLowerCase().includes(query) ||
+    (p.bio || "").toLowerCase().includes(query)
+  );
+
+  matches.forEach(p => {
+    const pill = document.createElement("span");
+    pill.className = "pill";
+    pill.textContent = p.name;
+    pill.onclick = () => openPerson(p.id);
+    resultsDiv.appendChild(pill);
+  });
+
+  if (!matches.length) {
+    resultsDiv.innerHTML = '<div class="hint">No matches found.</div>';
+  }
+});
+
+// --- Relationship Checker ---
+
+document.getElementById("relCheckBtn").addEventListener("click", function () {
+  const personAId = document.getElementById("relPersonA").value;
+  const personBId = document.getElementById("relPersonB").value;
+  const resultDiv = document.getElementById("relResult");
+
+  if (!personAId || !personBId || personAId === personBId) {
+    resultDiv.textContent = "Please select two different people.";
+    return;
+  }
+
+  const relation = findRelationship(personAId, personBId);
+  resultDiv.textContent = relation || "No direct relationship found.";
+});
+
+function findRelationship(idA, idB) {
+  if (!exists(idA) || !exists(idB)) return null;
+
+  const personA = data.people[idA];
+  const personB = data.people[idB];
+
+  // Direct parent/child
+  if ((personA.parents || []).includes(idB)) return `${personB.name} is parent of ${personA.name}`;
+  if ((personA.children || []).includes(idB)) return `${personB.name} is child of ${personA.name}`;
+
+  // Spouses
+  if ((personA.spouses || []).includes(idB)) return `${personB.name} is spouse of ${personA.name}`;
+
+  // Siblings (shared parents)
+  const parentsA = new Set(personA.parents || []);
+  const parentsB = new Set(personB.parents || []);
+  for (const p of parentsA) {
+    if (parentsB.has(p)) return `${personB.name} is sibling of ${personA.name}`;
+  }
+
+  // Grandparent/Grandchild
+  for (const parentAId of (personA.parents || [])) {
+    if (exists(parentAId)) {
+      const grandParents = data.people[parentAId].parents || [];
+      if (grandParents.includes(idB)) return `${personB.name} is grandparent of ${personA.name}`;
+    }
+  }
+  for (const childAId of (personA.children || [])) {
+    if (exists(childAId)) {
+      const grandChildren = data.people[childAId].children || [];
+      if (grandChildren.includes(idB)) return `${personB.name} is grandchild of ${personA.name}`;
+    }
+  }
+
+  // Aunts/Uncles/Nephews/Nieces (children of siblings of parents)
+  for (const parentAId of (personA.parents || [])) { // Iterate through A's parents
+    if (exists(parentAId)) {
+      const siblingsOfParentA = (data.people[parentAId].children || [])
+        .filter(id => id !== parentAId && id !== idA && exists(id)); // Siblings of A's parent
+      for (const siblingOfParentAId of siblingsOfParentA) {
+        if (siblingOfParentAId === idB) return `${personB.name} is aunt/uncle of ${personA.name}`;
+        if ((data.people[siblingOfParentAId].children || []).includes(idB)) return `${personB.name} is cousin of ${personA.name}`;
+      }
+    }
+  }
+  for (const parentBId of (personB.parents || [])) { // Iterate through B's parents
+    if (exists(parentBId)) {
+      const siblingsOfParentB = (data.people[parentBId].children || [])
+        .filter(id => id !== parentBId && id !== idB && exists(id)); // Siblings of B's parent
+      for (const siblingOfParentBId of siblingsOfParentB) {
+        if (siblingOfParentBId === idA) return `${personA.name} is aunt/uncle of ${personB.name}`;
+        if ((data.people[siblingOfParentBId].children || []).includes(idA)) return `${personA.name} is cousin of ${personB.name}`;
+      }
+    }
+  }
+
+  // Cousins (children of siblings of parents)
+  // This is a simplified check, a full cousin checker would be more complex.
+  // We already handle a simple case above.
+
+  // Breadth-First Search (BFS) for more complex relationships
+  const queue = [{ id: idA, path: [idA] }];
+  const visited = new Set();
+  visited.add(idA);
+
+  while (queue.length > 0) {
+    const { id: currentId, path } = queue.shift();
+
+    const currentPerson = data.people[currentId];
+    const neighbors = [
+      ...(currentPerson.parents || []),
+      ...(currentPerson.children || []),
+      ...(currentPerson.spouses || []),
+      ...Object.values(data.people).filter(p => (p.spouses || []).includes(currentId)).map(p => p.id), // Inverse spouses
+      ...Object.values(data.people).filter(p => (p.parents || []).includes(currentId)).map(p => p.id), // Inverse children
+    ].filter(nid => exists(nid));
+
+    for (const neighborId of neighbors) {
+      if (neighborId === idB) {
+        // Found a path
+        return `Related through a path: ${path.map(id => data.people[id].name).join(" -> ")} -> ${personB.name}`;
+      }
+      if (!visited.has(neighborId)) {
+        visited.add(neighborId);
+        queue.push({ id: neighborId, path: [...path, neighborId] });
+      }
+    }
+  }
+
+
+  return null; // No relationship found
+}
+
+
+// --- Admin Login ---
+
+document.getElementById("adminLoginBtn").addEventListener("click", async function () {
+  if (isAdmin) {
+    isAdmin = false;
+    localStorage.removeItem('adminKey'); // Clear stored key
+    this.textContent = "Login";
+    alert("Logged out as admin.");
+  } else {
+    const password = prompt("Enter admin password:");
+    if (!password) return;
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/admin-login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ password: password }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        isAdmin = result.success;
+        if (isAdmin) {
+          localStorage.setItem('adminKey', password); // Store the key (password) for subsequent requests
+          this.textContent = "Logout";
+          alert("Logged in as admin!");
+        } else {
+          alert("Incorrect password.");
+        }
+      } else {
+        throw new Error(`Login failed: ${response.statusText}`);
+      }
+    } catch (e) {
+      console.error("Admin login error:", e);
+      alert("Error during admin login: " + e.message);
+    }
+  }
+  renderAdminButtons();
+  renderTree(); // Rerender to show/hide edit buttons
+});
+
+function renderAdminButtons() {
+  document.getElementById("addPersonBtn").style.display = isAdmin ? "inline-flex" : "none";
+  document.getElementById("exportBtn").style.display = isAdmin ? "inline-flex" : "none";
+  document.getElementById("importBtn").style.display = isAdmin ? "inline-flex" : "none";
+  document.getElementById("jsonExport").style.display = isAdmin ? "block" : "none";
+
+  const adminLoginBtn = document.getElementById("adminLoginBtn");
+  if (adminLoginBtn) {
+    adminLoginBtn.textContent = isAdmin ? "Logout" : "Login";
+  }
+}
+
+// Check initial admin status on load (if key is stored)
+async function checkAdminStatus() {
+  const storedKey = localStorage.getItem('adminKey');
+  if (storedKey) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/admin-login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ password: storedKey }),
+      });
+      const result = await response.json();
+      isAdmin = result.success;
+      if (!isAdmin) {
+        localStorage.removeItem('adminKey'); // Stored key is no longer valid
+      }
+    } catch (e) {
+      console.error("Auto-login check failed:", e);
+      isAdmin = false;
+      localStorage.removeItem('adminKey');
+    }
+  }
+  renderAdminButtons();
+}
+
+
+// --- Data Export/Import ---
+
+document.getElementById("exportBtn").addEventListener("click", () => {
+  if (!isAdmin) { alert("Admin access required."); return; }
+  document.getElementById("jsonExport").value = JSON.stringify(data, null, 2);
+});
+
+document.getElementById("importBtn").addEventListener("click", async () => {
+  if (!isAdmin) { alert("Admin access required."); return; }
+  const json = document.getElementById("jsonExport").value;
+  if (!json) {
+    alert("Please paste JSON data into the text area.");
+    return;
+  }
+  try {
+    const importedData = JSON.parse(json);
+    if (importedData && importedData.people) {
+      data = importedData;
+      normalizeData(data);
+      await saveData(); // Save imported data to remote
+      alert("Data imported and saved remotely!");
+    } else {
+      alert("Invalid JSON structure. Expected an object with a 'people' property.");
+    }
+  } catch (e) {
+    console.error("Import error:", e);
+    alert("Failed to parse JSON data: " + e.message);
+  }
+});
+
+
+// --- Local File Operations (Optional, can keep or remove if not needed) ---
+// Note: These will still save/load locally, not to Blob storage.
+// If you want to integrate with Blob, you'd need separate APIs for listing/downloading/uploading files to Blob
+// and modify these functions to use those APIs. For now, they remain local file system only.
+
+document.getElementById('chooseFileBtn').addEventListener('click', async () => {
+  try {
+    [currentFileHandle] = await window.showOpenFilePicker({
+      types: [{ description: 'JSON Files', accept: { 'application/json': ['.json'] } }],
+      excludeAcceptAllOption: true,
+      multiple: false
+    });
+    document.getElementById('fileInfo').textContent = currentFileHandle.name;
+    alert(`File chosen: ${currentFileHandle.name}`);
+  } catch (err) {
+    console.error('File picker aborted or failed:', err);
+    document.getElementById('fileInfo').textContent = 'No file chosen.';
+    currentFileHandle = null;
+  }
+});
+
+document.getElementById('saveToFileBtn').addEventListener('click', async () => {
+  if (!currentFileHandle) {
+    alert("No file chosen. Please choose or create a file first.");
+    return;
+  }
+  try {
+    const writable = await currentFileHandle.createWritable();
+    await writable.write(JSON.stringify(data, null, 2));
+    await writable.close();
+    alert(`Data saved to ${currentFileHandle.name}`);
+  } catch (err) {
+    console.error('Error saving file:', err);
+    alert('Failed to save file. Check console for details.');
+  }
+});
+
+document.getElementById('loadFromFileBtn').addEventListener('click', async () => {
+  if (!currentFileHandle) {
+    alert("No file chosen. Please choose a file first.");
+    return;
+  }
+  try {
+    const file = await currentFileHandle.getFile();
+    const contents = await file.text();
+    const loadedData = JSON.parse(contents);
+    if (loadedData && loadedData.people) {
+      data = loadedData;
+      normalizeData(data);
+      renderTree();
+      fillSelects();
+      alert(`Data loaded from ${currentFileHandle.name}`);
+    } else {
+      alert("Invalid data structure in file.");
+    }
+  } catch (err) {
+    console.error('Error loading file:', err);
+    alert('Failed to load file. Check console for details.');
+  }
+});
+
+// --- Initial Load ---
+
+document.addEventListener("DOMContentLoaded", async () => {
+  await checkAdminStatus(); // Check admin login state first
+  await loadData(); // Load data from remote on page load
+});
+
+document.getElementById("addPersonBtn").addEventListener("click", () => editPerson(null));
