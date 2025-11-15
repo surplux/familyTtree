@@ -27,7 +27,7 @@ export async function POST(req) {
       key,
       JSON.stringify(payload, null, 2),
       {
-        access: 'private',
+        access: 'public',
         addRandomSuffix: false,
         allowOverwrite: true, // 👈 THIS MUST BE HERE
         contentType: 'application/json; charset=utf-8',
